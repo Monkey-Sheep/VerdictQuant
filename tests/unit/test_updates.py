@@ -190,7 +190,7 @@ def test_release_without_github_digest_is_rejected() -> None:
 
 
 def test_download_verifies_size_digest_and_reports_progress(tmp_path: Path) -> None:
-    body = b"verified-update" * 100
+    body = b"verified-update" * 20_000
     release = _release(version="1.1.0", body=body)
     progress: list[tuple[int, int]] = []
     client = GitHubReleaseClient(
@@ -204,6 +204,7 @@ def test_download_verifies_size_digest_and_reports_progress(tmp_path: Path) -> N
     )
 
     assert destination.read_bytes() == body
+    assert len(progress) > 1
     assert progress[-1] == (len(body), len(body))
 
 
@@ -215,6 +216,26 @@ def test_download_removes_partial_file_on_digest_mismatch(tmp_path: Path) -> Non
     )
 
     with pytest.raises(UpdateError, match="SHA-256 mismatch"):
+        client.download(release, tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_enforces_total_time_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pa_agent.update.github_release as release_module
+
+    body = b"slow"
+    release = _release(version="1.1.0", body=body)
+    times = iter((0.0, 1801.0))
+    monkeypatch.setattr(release_module.time, "monotonic", lambda: next(times))
+    client = GitHubReleaseClient(
+        urlopen=lambda request, timeout: _FakeResponse(body),
+    )
+
+    with pytest.raises(UpdateError, match="30-minute"):
         client.download(release, tmp_path)
 
     assert list(tmp_path.iterdir()) == []

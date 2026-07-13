@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -19,6 +20,8 @@ from pa_agent.brand import PRODUCT_NAME, PRODUCT_REPOSITORY, PRODUCT_VERSION
 
 _ASSET_NAME = "VerdictQuant-windows-x64.zip"
 _MAX_ASSET_BYTES = 600 * 1024 * 1024
+_MAX_DOWNLOAD_SECONDS = 30 * 60
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+]([0-9A-Za-z.-]+))?$")
 _SHA256_DIGEST = re.compile(r"^sha256:([0-9a-fA-F]{64})$")
 
@@ -247,13 +250,16 @@ class GitHubReleaseClient:
         temporary = destination.with_name(f".{destination.name}.{os.getpid()}.part")
         digest = hashlib.sha256()
         received = 0
+        started = time.monotonic()
         try:
             with (
                 self._open(release.asset.api_url, binary=True) as response,
                 temporary.open("wb") as output,
             ):
                 while True:
-                    chunk = response.read(1024 * 1024)
+                    if time.monotonic() - started > _MAX_DOWNLOAD_SECONDS:
+                        raise UpdateError("Update download exceeded the 30-minute limit")
+                    chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
                     if not chunk:
                         break
                     received += len(chunk)
@@ -280,7 +286,7 @@ class GitHubReleaseClient:
             return False
         digest = hashlib.sha256()
         with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            for chunk in iter(lambda: stream.read(_DOWNLOAD_CHUNK_BYTES), b""):
                 digest.update(chunk)
         return hmac.compare_digest(digest.hexdigest(), asset.sha256)
 
