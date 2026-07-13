@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verdictquant"
+version = "1.0.0"
+description = "AI-assisted K-line research and paper-quant workbench (AGPL-3.0-or-later)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "VerdictQuant Contributors" }]
+dependencies = [
+    "PyQt6>=6.6",
+    "pyqtgraph>=0.13",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "openai>=1.40",
+    "tiktoken>=0.7",
+    "jsonschema>=4.22",
+    "pydantic>=2.7",
+    "MetaTrader5>=5.0; sys_platform == 'win32'",
+    "tvdatafeed @ git+https://github.com/rongardF/tvdatafeed.git@e6f6aaa7de439ac6e454d9b26d2760ded8dc4923",
+    "cryptography>=42",
+    "pywin32>=306; sys_platform == 'win32'",
+    "akshare>=1.14",
+    "baostock>=0.8",
+    "curl_cffi>=0.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4.4",
+    "hypothesis>=6",
+    "ruff>=0.5",
+    "black>=24.4",
+]
+release = [
+    "pyinstaller>=6.14",
+]
+
+[project.scripts]
+verdictquant = "pa_agent.main:main"
+verdictquant-analyze = "pa_agent.headless:main"
+verdictquant-forecast = "pa_agent.forecast_cli:main"
+verdictquant-finance = "pa_agent.integrations.finance_cli:main"
+verdictquant-paper = "pa_agent.quant.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pa_agent*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "unit: unit-level tests",
+    "property: property-based tests (hypothesis)",
+    "integration: integration tests crossing module boundaries",
+    "e2e: end-to-end smoke tests",
+    "live: requires real API key via environment variable (never uses config/settings.json)",
+]

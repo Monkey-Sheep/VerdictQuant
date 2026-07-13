@@ -1,0 +1,1 @@
+"""VerdictQuant configuration package."""
