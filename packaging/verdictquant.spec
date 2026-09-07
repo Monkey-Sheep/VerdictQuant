@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
@@ -59,6 +60,20 @@ updater_a = Analysis(
     excludes=["PyQt6", "akshare", "baostock", "numpy", "pandas", "tvDatafeed"],
     noarchive=False,
 )
+
+def without_shadowing_windows_icu(entries):
+    """Qt's Windows ICU shim must not be replaced by a host Poppler ICU."""
+    system_names = {"icuuc.dll", "icuin.dll"}
+    shadow_dirs = {Path(source).parent for target, source, _ in entries if target.lower() in system_names}
+    return [entry for entry in entries if entry[0].lower() not in system_names
+            and not (entry[0].lower().startswith("icudt") and Path(entry[1]).parent in shadow_dirs)]
+
+
+if os.name == "nt":
+    # These unversioned names are supplied by Windows. A PATH entry for tools
+    # such as Poppler can otherwise shadow them with an incompatible ICU ABI.
+    gui_a.binaries = without_shadowing_windows_icu(gui_a.binaries)
+    cli_a.binaries = without_shadowing_windows_icu(cli_a.binaries)
 
 gui_pyz = PYZ(gui_a.pure)
 gui_exe = EXE(
