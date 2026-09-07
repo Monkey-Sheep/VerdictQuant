@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-09-07",
+  "markets": {
+    "US": {
+      "timezone": "America/New_York", "open": "09:30", "close": "16:00",
+      "coverage_start": "2026-01-01", "coverage_end": "2026-12-31",
+      "source": "https://www.nyse.com/trade/hours-calendars",
+      "holidays": ["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"],
+      "holiday_ranges": [],
+      "special_closes": {"2026-11-27": "13:00", "2026-12-24": "13:00"},
+      "verified": true
+    },
+    "CN": {
+      "timezone": "Asia/Shanghai", "open": "09:30", "close": "15:00",
+      "coverage_start": "2026-01-01", "coverage_end": "2026-12-31",
+      "source": "https://www.sse.com.cn/disclosure/dealinstruc/closed/",
+      "holidays": [],
+      "holiday_ranges": [["2026-01-01", "2026-01-03"], ["2026-02-15", "2026-02-23"], ["2026-04-04", "2026-04-06"], ["2026-05-01", "2026-05-05"], ["2026-06-19", "2026-06-21"], ["2026-09-25", "2026-09-27"], ["2026-10-01", "2026-10-07"]],
+      "special_closes": {}, "verified": true
+    },
+    "KR": {
+      "timezone": "Asia/Seoul", "open": "09:00", "close": "15:30",
+      "coverage_start": "2026-01-01", "coverage_end": "2026-12-31",
+      "source": "https://open.krx.co.kr/contents/MKD/01/0110/01100305/MKD01100305.jsp",
+      "holidays": ["2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-02", "2026-05-01", "2026-05-05", "2026-05-25", "2026-06-03", "2026-07-17", "2026-08-17", "2026-09-24", "2026-09-25", "2026-10-05", "2026-10-09", "2026-12-25", "2026-12-31"],
+      "holiday_ranges": [], "special_closes": {}, "verified": true
+    }
+  }
+}

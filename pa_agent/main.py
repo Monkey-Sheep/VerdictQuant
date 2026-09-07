@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv if argv is None else argv)
+    if "--monitor" in args:
+        # This view does not bootstrap model settings or encrypted credentials.
+        from pa_agent.gui.manual_monitor import main as monitor_main
+        return monitor_main(args)
     # Early diagnostics before Qt / heavy imports: crash dumps + file logging.
     from pa_agent.util.crash_diagnostics import enable_crash_diagnostics, log_startup_diagnostics
     from pa_agent.util.logging import configure_logging
