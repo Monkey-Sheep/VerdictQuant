@@ -1,9 +1,12 @@
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 root = Path(SPECPATH).parent
 datas = [(str(root / "prompt_engineering"), "prompt_engineering")]
+datas.extend((str(root / "pa_agent" / "monitoring" / name), "pa_agent/monitoring") for name in ("policy.json", "calendars.json"))
+datas.extend(collect_data_files("tzdata"))
+datas.append((str(root / "pa_agent" / "gui" / "theme" / "dark.qss"), "pa_agent/gui/theme"))
 hiddenimports = collect_submodules("pa_agent")
 hiddenimports.extend(["win32cred", "win32crypt"])
 

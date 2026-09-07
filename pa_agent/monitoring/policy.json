@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "policy_id": "fund-us-monitor-v1",
+  "research_only": true,
+  "account_connections": false,
+  "live_execution": false,
+  "fund": "001437",
+  "us_universe": ["VOO", "QQQM", "CEG", "VST", "MU", "SNDK", "SKHY", "TSM", "ASML", "COIN", "SPCX"],
+  "zero_position_watch_only": ["SNDK", "SKHY"],
+  "background_only": {"BTC-USD": "COIN"},
+  "auxiliary": {"000660.KS": "KR", "KRW=X": "FX", "BTC-USD": "CRYPTO", "SPY": "US", "RSP": "US", "IWM": "US", "HYG": "US", "^VIX": "US", "^TNX": "US", "399006.SZ": "CN", "000688.SS": "CN"},
+  "core_review": {"VOO": {"drawdown_pct": 10, "requires_below_ma50": false, "first_trim_max_shares": 4}, "QQQM": {"drawdown_pct": 12, "requires_below_ma50": true, "first_trim_max_shares": 4}},
+  "risk_statuses": {"fund": ["HOLD", "STOP_ADDING", "WATCH_CLOSELY", "REDUCE", "EXIT_PROPOSAL"], "us": ["NORMAL", "WATCH_CLOSELY", "TRIM_PROPOSAL", "EXIT_PROPOSAL"]},
+  "max_response_bytes": 2097152,
+  "http_timeout_seconds": 12,
+  "quote_max_age_seconds": 900,
+  "max_workers": 6
+}

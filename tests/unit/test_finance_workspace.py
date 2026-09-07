@@ -110,7 +110,7 @@ def test_finance_hub_loads_all_market_tabs(
     monkeypatch.setenv("VERDICTQUANT_QUANT_CONFIG", str(tmp_path / "quant-config.json"))
     widget = FinanceHubWidget()
     qtbot.addWidget(widget)  # type: ignore[attr-defined]
-    assert widget._tabs.count() == 8
+    assert widget._tabs.count() == 9
     assert widget._us_table.rowCount() == 1
     assert widget._a_table.rowCount() == 1
     assert widget._poly_table.rowCount() == 0

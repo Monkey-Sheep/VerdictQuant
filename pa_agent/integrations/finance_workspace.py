@@ -12,7 +12,10 @@ import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+
 from typing import Any, Literal
+
+from pa_agent.monitoring.state import fund_confirmation, load_state
 
 PaperScope = Literal["stocks", "polymarket", "all"]
 
@@ -236,6 +239,7 @@ def load_finance_snapshot(workspace: str | Path | None = None) -> dict[str, Any]
     research = _read_json(paths["research"])
     stock_state = _read_text(paths["stock_state"])
     fund_state = _read_text(paths["fund_state"])
+    confirmed_fund = fund_confirmation(load_state(root / "portfolio_state.json"))
 
     file_state = []
     for name, path in paths.items():
@@ -296,13 +300,11 @@ def load_finance_snapshot(workspace: str | Path | None = None) -> dict[str, Any]
             "advisory_only": True,
         },
         "fund": {
-            "code": "001437" if "001437" in fund_state else None,
-            "position_confirmed": "real investment" in fund_state.lower(),
-            "position_details_complete": (
-                "holding amount, average cost, purchase date" not in fund_state.lower()
-            ),
+            "code": "001437" if "001437" in fund_state or confirmed_fund["state_source_verified"] else None,
+            **confirmed_fund,
             "actions": ["HOLD", "STOP_ADDING", "WATCH_CLOSELY", "REDUCE", "EXIT_PROPOSAL"],
-            "source": str(paths["fund_state"]),
+            "source": str(root / "portfolio_state.json"),
+            "source_available": (root / "portfolio_state.json").is_file(),
             "manual_action_only": True,
         },
         "us": {

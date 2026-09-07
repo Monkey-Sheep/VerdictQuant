@@ -129,6 +129,9 @@ class FinanceHubWidget(QWidget):
         layout.addWidget(summary)
 
         self._tabs = QTabWidget()
+        from pa_agent.gui.manual_monitor import ManualMonitorWidget
+        self._manual_monitor = ManualMonitorWidget(self)
+        self._tabs.addTab(self._manual_monitor, "组合监控")
         self._us_table = self._make_table(
             ["代码", "最新收盘", "日期", "K线数", "策略共识", "买入持有", "状态"]
         )

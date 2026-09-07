@@ -63,6 +63,8 @@ python -m pa_agent.main
 
 ## 详细说明
 
+未发布变更：新增“综合研究中心 → 组合监控”。打开只读上次结果，点击刷新才获取公开数据；支持 `VerdictQuant.exe --monitor` 直接查看，无定时推送、账户连接或下单。使用与数据限制见 [手动监控说明](docs/MANUAL_MONITOR_CN.md)。
+
 `1.0.0` 完整教程见 [`USER_GUIDE_CN.md`](USER_GUIDE_CN.md)，配置字段说明见
 [`config/README.md`](config/README.md)。
 
