@@ -499,6 +499,11 @@ class InstallmentQtTests(unittest.TestCase):
         self.assertIn("example-ex99.htm", rendered)
         self.assertNotIn("SECRET_RAW_DOCUMENT_MUST_NOT_RENDER", text)
 
+    def test_cache_only_usage_is_not_reported_as_missing_or_new_charge(self):
+        self.widget._show_usage({"provider": {"cache_only": True, "usage": {}}, "model_reused": True})
+        self.assertIn("未发起新的模型调用", self.widget.usage_note.text())
+        self.assertNotIn("未提供", self.widget.usage_note.text())
+
     def test_real_service_cache_plan_ledger_contract_offline(self):
         from pa_agent.installment.service import InstallmentService
         from pa_agent.installment.decision import DECISION_VERSION

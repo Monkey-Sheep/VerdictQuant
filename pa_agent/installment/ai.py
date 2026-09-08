@@ -127,7 +127,10 @@ def public_packet(symbol: str, price: dict, research: dict):
 def evidence_fingerprint(packets, model: str):
     def stable(value):
         if isinstance(value, dict):
-            return {k: stable(v) for k, v in value.items() if k not in {"retrieved_at", "fetched_at", "attempted_at", "age_days"}}
+            # Raw HTML/JSON hashes still remain in the audit snapshot. Their
+            # timestamps, script nonces and transport formatting are not new
+            # company facts when the actual consumed text/values are identical.
+            return {k: stable(v) for k, v in value.items() if k not in {"retrieved_at", "fetched_at", "attempted_at", "age_days", "sha256", "bytes"}}
         if isinstance(value, list):
             return [stable(v) for v in value]
         return value

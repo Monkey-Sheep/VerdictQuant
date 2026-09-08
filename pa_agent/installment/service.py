@@ -294,7 +294,8 @@ class InstallmentService:
             qualified_packets = [p for p in packets if (p.get("issuer") or {}).get("status") == "verified" and p["price"].get("qualified")]
             if not qualified_packets:
                 errors.append("本次没有同时通过发行人身份与行情校验的标的，未调用模型；请查看各股数据来源错误。")
-            model_result, reused = None, False
+            model_result, reused = {"judgments": {}}, False
+            model_times, reused_symbols = {}, []
             model_name = None
             engine = self.load_engine()
             try:
@@ -310,19 +311,73 @@ class InstallmentService:
                     model_name = analyst.provider_loader().model
                 else:
                     model_name = getattr(analyst, "model", "isolated-test")
-                digest = evidence_fingerprint(qualified_packets, json.dumps(engine, sort_keys=True) + model_name)
-                cache_path = self.root / "judgment-cache" / (digest + ".json")
-                if cache_path.is_file():
-                    cached = _read_json(cache_path)
-                    age = (now - datetime.fromisoformat(cached["created_at"])).total_seconds()
-                    if 0 <= age <= 24 * 3600 and cached.get("fingerprint") == digest:
-                        model_result, reused = cached["result"], True
-                if model_result is None and qualified_packets:
+                model_tag = json.dumps(engine, sort_keys=True) + model_name
+                prior_snapshot = None
+                try:
+                    prior_snapshot = self.latest()
+                except (ValueError, KeyError, TypeError, OSError):
+                    pass
+                prior_rows = {x["symbol"]: x for x in (prior_snapshot or {}).get("assessments", [])}
+                pending, cache_paths = [], {}
+                for packet in qualified_packets:
+                    symbol = packet["symbol"]
+                    digest = evidence_fingerprint([packet], model_tag)
+                    cache_path = self.root / "judgment-cache" / (digest + ".json")
+                    cache_paths[symbol] = (cache_path, digest)
+                    candidate, made_at = None, None
+                    if cache_path.is_file():
+                        try:
+                            cached = _read_json(cache_path)
+                            if cached.get("fingerprint") == digest:
+                                candidate, made_at = cached["judgment"], cached["created_at"]
+                        except (OSError, ValueError, KeyError, TypeError):
+                            pass
+                    # Reuse a verified prior snapshot during a cache format
+                    # migration; never silently replay a different engine.
+                    old = prior_rows.get(symbol)
+                    if candidate is None and old and prior_snapshot.get("engine") == engine and prior_snapshot.get("prompt_version") == PROMPT_VERSION:
+                        old_packet = public_packet(symbol, old["price"], prior_snapshot.get("public_evidence", {}).get(symbol, {}))
+                        if evidence_fingerprint([old_packet], model_tag) == digest:
+                            candidate = old.get("model_judgment")
+                            made_at = old.get("model_generated_at") or prior_snapshot["generated_at"]
+                    if candidate is not None and made_at:
+                        try:
+                            age = (now - datetime.fromisoformat(made_at)).total_seconds()
+                            days = candidate.get("review_in_days", 1)
+                            if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 30:
+                                raise ValueError()
+                            checked = assess(symbol, prices[symbol], research[symbol], candidate, now)
+                            valid = bool(checked.get("model_judgment"))
+                            limit = min(24 * 3600, days * 86400)
+                        except (ValueError, KeyError, TypeError):
+                            age, limit, valid = -1, 0, False
+                        if valid and 0 <= age < limit:
+                            model_result["judgments"][symbol] = candidate
+                            model_times[symbol] = made_at
+                            reused_symbols.append(symbol)
+                            continue
+                    pending.append(packet)
+                if pending:
                     if progress:
-                        progress("正在调用已配置的模型；只发送公开资料，不发送持仓和预算…")
-                    model_result = analyst.analyze(qualified_packets, cancelled, progress)
-                    cache_path.parent.mkdir(exist_ok=True)
-                    atomic_json(cache_path, {"fingerprint": digest, "created_at": now.isoformat(), "result": model_result})
+                        progress(f"本次只分析 {len(pending)} 只证据已变动或到期的股票；其余复用有效结论。")
+                    fresh = analyst.analyze(pending, cancelled, progress)
+                    model_result["provider"] = fresh["provider"]
+                    for symbol, judgment in fresh["judgments"].items():
+                        model_result["judgments"][symbol] = judgment
+                        model_times[symbol] = now.isoformat()
+                        try:
+                            checked = assess(symbol, prices[symbol], research[symbol], judgment, now)
+                            valid = bool(checked.get("model_judgment"))
+                        except (ValueError, KeyError, TypeError):
+                            valid = False
+                        if valid:
+                            cache_path, digest = cache_paths[symbol]
+                            cache_path.parent.mkdir(exist_ok=True)
+                            atomic_json(cache_path, {"fingerprint": digest, "created_at": now.isoformat(), "judgment": judgment})
+                elif reused_symbols:
+                    reused = True
+                    model_result["provider"] = {"model": model_name, "kind": engine["kind"], "status": "completed", "usage": {},
+                                                "cache_only": True, "public_data_only": True}
             except CancelledError:
                 raise
             except AnalysisError as exc:
@@ -343,6 +398,13 @@ class InstallmentService:
                         item = missing_assessment(s, prices[s], research[s], "模型引用、数字口径或输出结构未通过校验。", now)
                         if re.fullmatch(r"MODEL_[A-Z_]+", str(exc)):
                             item["errors"].append(str(exc))
+                if s in model_times:
+                    item["model_generated_at"] = model_times[s]
+                    item["model_reused"] = s in reused_symbols
+                    if judgment:
+                        original_deadline = datetime.fromisoformat(model_times[s]) + timedelta(days=judgment.get("review_in_days", 1))
+                        item["review_at"] = min(datetime.fromisoformat(item["review_at"]), original_deadline).isoformat()
+                        item["next_review"] = datetime.fromisoformat(item["review_at"]).date().isoformat()
                 assessments.append(item)
             plan = self.load_plan()
             budget = allocate(assessments, plan, self.contributions(), now)
@@ -372,6 +434,7 @@ class InstallmentService:
                       "engine": engine,
                       "decision_policy_version": DECISION_VERSION,
                       "model_reused": reused, "prompt_version": PROMPT_VERSION, "plan_status": budget, "plan_hash": _hash(plan),
+                      "reused_symbols": reused_symbols,
                       "comparison": {"previous_run_id": (previous or {}).get("run_id"), "changes": changes},
                       "errors": errors, "expired": False, "actionable": True,
                       "limitations": ["这是公开资料与AI情景判断，不是低点预测或收益保证。", "新闻覆盖有限；没有新闻不表示没有风险。",
