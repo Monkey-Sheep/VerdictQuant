@@ -141,7 +141,6 @@ class DeepSeekResearch:
 
     def analyze(self, packets: list[dict], cancelled=None, progress=None):
         from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError
-        import httpx
         provider = self.provider_loader()
         payload = json.dumps({"public_evidence": packets}, ensure_ascii=False, allow_nan=False)
         if len(payload.encode()) > 300_000:
@@ -160,7 +159,7 @@ class DeepSeekResearch:
         # contain request material. Only stable error classes leave this method.
         try:
             with OpenAI(api_key=provider.api_key, base_url=provider.base_url, max_retries=0,
-                        timeout=httpx.Timeout(240, connect=12)) as client:
+                        timeout=240.0) as client:
                 with client.chat.completions.create(**kwargs) as stream:
                     for event in stream:
                         if cancelled is not None and cancelled.is_set():
