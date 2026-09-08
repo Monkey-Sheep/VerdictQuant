@@ -179,9 +179,50 @@ class InstallmentServiceTests(unittest.TestCase):
         b = copy.deepcopy(a)
         b[0]["retrieved_at"] = "b"
         b[0]["sources"][0]["fetched_at"] = "b"
+        b[0]["sources"][0]["sha256"] = "transport-only-change"
         self.assertEqual(evidence_fingerprint(a, "x"), evidence_fingerprint(b, "x"))
         b[0]["value"] = 2
         self.assertNotEqual(evidence_fingerprint(a, "x"), evidence_fingerprint(b, "x"))
+
+    def test_one_stock_news_does_not_reanalyze_unchanged_peers(self):
+        class PerStockAnalyst:
+            model = "offline-fixture"
+            calls = []
+            def analyze(self, packets, cancelled=None, progress=None):
+                self.calls.append([p["symbol"] for p in packets])
+                return {"judgments": {p["symbol"]: {**judgment(), "symbol": p["symbol"]} for p in packets},
+                        "provider": {"model": self.model, "status": "completed", "usage": {}}}
+        analyst = PerStockAnalyst()
+        service = InstallmentService(self.root, self.market, self.public, analyst, ["NVDA", "TSLA"], lambda: self.now,
+                                     lambda *args, **kwargs: {"documents": [], "sources": [], "errors": []})
+        service.refresh()
+        original_fetch = self.public.fetch
+        def updated(symbol, *args):
+            value = original_fetch(symbol, *args)
+            if symbol == "TSLA": value["news"] = [{"title": "New reported fact", "published_at": NOW.isoformat()}]
+            return value
+        with patch.object(self.public, "fetch", side_effect=updated):
+            result = service.refresh()
+        self.assertEqual(analyst.calls, [["NVDA", "TSLA"], ["TSLA"]])
+        self.assertEqual(result["reused_symbols"], ["NVDA"])
+
+    def test_cached_model_review_deadline_is_not_renewed_by_refresh(self):
+        row = judgment()
+        row["review_in_days"] = 1
+        with patch.object(self.analyst, "analyze", return_value={"judgments": {"NVDA": row}, "provider": {"model": "offline-fixture", "status": "completed", "usage": {}}}):
+            first = self.service.refresh()
+            self.now += timedelta(hours=12)
+            second = self.service.refresh()
+        self.assertTrue(second["model_reused"])
+        self.assertEqual(first["assessments"][0]["review_at"], second["assessments"][0]["review_at"])
+
+    def test_invalid_model_output_is_not_cached_for_the_next_refresh(self):
+        bad = judgment()
+        bad["business_evidence"] = ["nonexistent-source"]
+        with patch.object(self.analyst, "analyze", return_value={"judgments": {"NVDA": bad}, "provider": {"model": "offline-fixture", "status": "completed", "usage": {}}}) as call:
+            self.service.refresh()
+            self.service.refresh()
+        self.assertEqual(call.call_count, 2)
 
 
 if __name__ == "__main__": unittest.main()

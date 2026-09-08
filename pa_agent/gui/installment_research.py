@@ -627,6 +627,9 @@ class InstallmentResearchWidget(QWidget):
             value = next((_number(usage.get(key)) for key in keys if _number(usage.get(key)) is not None), None)
             if value is not None and value >= 0 and value.is_integer():
                 values.append(f"{label} {int(value):,} tokens")
+        if ((result or {}).get("provider") or {}).get("cache_only"):
+            self.usage_note.setText("本次逐股复用有效判断，未发起新的模型调用；原判断时间见股票详情。")
+            return
         prefix = "本次复用已有模型结果，以下为原调用返回的用量：" if (result or {}).get("model_reused") else "该快照模型返回的实际用量："
         self.usage_note.setText(prefix + "；".join(values) + "。不据此估算剩余额度或费用。" if values
                                else "该快照未提供实际模型用量；不估算剩余额度或费用。")
@@ -724,6 +727,9 @@ class InstallmentResearchWidget(QWidget):
         engine_warning = "<p><b>引擎设置已变更：以下仍是旧模型的结果，需手动更新才使用新引擎分析。</b></p>" if self._engine_is_stale(self._result) and not self._historical else ""
         self.details.setHtml(history + dirty + expired + engine_warning + f"<h2>{_text(item.get('symbol'))} · {_text(item.get('name'))}</h2>"
             f"<h3>{_text(item.get('decision_label'))}</h3><p>模型判断把握（非上涨概率）：{confidence}</p>"
+            f"<p>模型判断生成时间：{_text(item.get('model_generated_at') or (self._result or {}).get('generated_at'))}。"
+            + ("本次该股证据未变，复用有效判断。</p>" if item.get("model_reused") else "</p>")
+            +
             f"<p>{_text(item.get('summary'))}</p>"
             f"<p><b>本期建议：{_money(budget.get('amount_usd'))} USD</b>　{_text(budget.get('label'))}</p>"
             f"<p>{_text(budget.get('reason'))}</p>"
