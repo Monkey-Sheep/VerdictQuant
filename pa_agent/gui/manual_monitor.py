@@ -6,7 +6,7 @@ from concurrent.futures import CancelledError, ThreadPoolExecutor
 
 from PyQt6.QtCore import QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget
 
 from pa_agent.monitoring.service import MonitoringService, RefreshBusy
 from pa_agent.monitoring.view import render
@@ -19,12 +19,12 @@ class ManualMonitorWidget(QWidget):
         self._executor = None
         self._future = None
         self._cancelled = threading.Event()
-        self.setWindowTitle("VerdictQuant · 组合监控")
+        self.setWindowTitle("VerdictQuant · 投资研究")
         self.resize(1180, 860)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 16)
         header = QHBoxLayout()
-        title = QLabel("组合监控")
+        title = QLabel("投资研究工作台")
         title.setStyleSheet("font-size:24px; font-weight:700;")
         header.addWidget(title)
         header.addStretch()
@@ -34,7 +34,7 @@ class ManualMonitorWidget(QWidget):
         self.refresh_button.clicked.connect(self.refresh_data)
         header.addWidget(self.refresh_button)
         layout.addLayout(header)
-        subtitle = QLabel("打开查看上次结果，点击刷新才联网。基金与美股分别呈现。")
+        subtitle = QLabel("打开查看上次结果，点击更新才联网。分批投入判断与基金行情分别呈现。")
         subtitle.setObjectName("mutedLabel")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -43,7 +43,14 @@ class ManualMonitorWidget(QWidget):
         self.browser.setOpenLinks(False)
         self.browser.anchorClicked.connect(self._open_source)
         self.browser.setStyleSheet("QTextBrowser { padding:10px; font-size:13px; }")
-        layout.addWidget(self.browser, 1)
+        self.tabs = QTabWidget()
+        from pa_agent.gui.installment_research import InstallmentResearchWidget
+        self.installment = InstallmentResearchWidget(self)
+        self.tabs.addTab(self.installment, "分批投资研究")
+        self.tabs.addTab(self.browser, "基金与行情监控")
+        self.tabs.currentChanged.connect(lambda index: self.refresh_button.setVisible(index == 1))
+        self.refresh_button.setVisible(False)
+        layout.addWidget(self.tabs, 1)
         self.status = QLabel("仅读取本地保存结果；不会定时推送。")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -99,6 +106,8 @@ class ManualMonitorWidget(QWidget):
         self._poll.stop()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
+        if hasattr(self, "installment"):
+            self.installment.shutdown()
 
     def closeEvent(self, event):
         self.shutdown()
