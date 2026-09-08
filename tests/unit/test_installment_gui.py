@@ -499,6 +499,14 @@ class InstallmentQtTests(unittest.TestCase):
         self.assertIn("example-ex99.htm", rendered)
         self.assertNotIn("SECRET_RAW_DOCUMENT_MUST_NOT_RENDER", text)
 
+    def test_overlap_is_explained_with_members_and_fund_limit(self):
+        from pa_agent.gui.installment_research import _overlap_html
+        text = _overlap_html("NVDA")
+        self.assertIn("NVDA、TSM、ASML、MU", text)
+        self.assertIn("共享", text)
+        self.assertIn("未做基金穿透", text)
+        self.assertIn("CEG、VST", _overlap_html("CEG"))
+
     def test_cache_only_usage_is_not_reported_as_missing_or_new_charge(self):
         self.widget._show_usage({"provider": {"cache_only": True, "usage": {}}, "model_reused": True})
         self.assertIn("未发起新的模型调用", self.widget.usage_note.text())

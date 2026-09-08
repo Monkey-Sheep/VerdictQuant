@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from pa_agent.installment.models import SYMBOLS, CORE_SYMBOLS, current_period
+from pa_agent.installment.models import SYMBOLS, CORE_SYMBOLS, THEMES, current_period
 
 DEFAULT_ENGINE = {"kind": "codex_cli", "model": "gpt-5.3-codex-spark", "reasoning_effort": "high"}
 
@@ -49,6 +49,15 @@ def _items(values):
     if not isinstance(values, list) or not values:
         return "<p>待核实</p>"
     return "<ul>" + "".join(f"<li>{_text(v)}</li>" for v in values) + "</ul>"
+
+
+def _overlap_html(symbol):
+    rows = [f"{name}：{'、'.join(s for s in SYMBOLS if s in members)}。同组共享你设置的上限。"
+            for name, members in THEMES.items() if symbol in members]
+    return ("<h3>组合重叠与额度</h3>" + _items(rows)
+            + "<p>AI与半导体组共同受算力投资影响；CEG与VST同受发电及电力需求影响。"
+              "“高不确定性成长”是风险预算分组，不代表属于同一行业。"
+              "已有指数基金和主动基金还可能重复持有相关股票；当前只计算你填写的直接持仓，未做基金穿透，实际重叠可能更高。</p>")
 
 
 def _https_url(value):
@@ -249,6 +258,9 @@ class InvestmentPlanDialog(QDialog):
         root.addLayout(form)
         root.addWidget(_plain_label("单次分批比例只作用于该股票本月尚未投入的计划额度，不是全账户比例；须满足：高风险 ≤ 正常 ≤ 更有吸引力。可自行调整默认比例。"))
         root.addWidget(_plain_label("目标权重用于分配新增预算，总和不能超过 100%。当前持仓不清楚时请留空。"))
+        root.addWidget(_plain_label("共享上限的直接持仓分组：" + "；".join(
+            f"{name}（{'、'.join(s for s in SYMBOLS if s in members)}）" for name, members in THEMES.items())
+            + "。最后一组是风险预算分组，不代表同一行业；基金重叠尚未穿透。"))
         root.addWidget(_plain_label("核心基金只填写市值，不参与此处新增个股预算；非美元资产请按你确认的汇率折算为 USD。"))
         root.addWidget(_plain_label("填写或重新确认持仓时，金额应包括此前已完成的投入。只修改预算或年限不更新未编辑持仓的确认时间；保存计划不代表交易。"))
         self.assets = QTableWidget(len(symbols), 3)
@@ -734,6 +746,7 @@ class InstallmentResearchWidget(QWidget):
             f"<p><b>本期建议：{_money(budget.get('amount_usd'))} USD</b>　{_text(budget.get('label'))}</p>"
             f"<p>{_text(budget.get('reason'))}</p>"
             f"<p>本期已确认投入：{_money(budget.get('spent_this_month_usd'))} USD。{_text(budget.get('note'))}</p>"
+            + _overlap_html(item.get("symbol")) +
             f"<h3>判断依据</h3>{_items(item.get('reasons'))}"
             f"<h3>需要承担的风险</h3>{_items(item.get('risks'))}"
             f"<h3>价格与估值</h3><p>最近收盘：{_money(price.get('close'))} USD；"
