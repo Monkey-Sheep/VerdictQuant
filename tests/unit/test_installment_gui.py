@@ -494,6 +494,23 @@ class InstallmentQtTests(unittest.TestCase):
         self.widget.information.button.click()
         self.assertFalse(self.widget.information.content.isHidden())
         self.assertIn("本月预算未填写", self.widget.plan_summary.text())
+        self.widget.information.dialog.reject()
+        self.assertEqual(self.service.calls, 0)
+
+    def test_opening_research_information_does_not_squeeze_main_content(self):
+        self.widget.resize(1120, 760)
+        self.widget.show()
+        for _ in range(6):
+            self.app.processEvents()
+        original = self.widget.table.size()
+        self.widget.information.button.click()
+        for _ in range(6):
+            self.app.processEvents()
+        self.assertTrue(self.widget.information.dialog.isVisible())
+        self.assertEqual(self.widget.table.size(), original)
+        self.assertGreater(self.widget.table.viewport().height(), 100)
+        self.widget.information.dialog.reject()
+        self.assertFalse(self.widget.information.button.isChecked())
         self.assertEqual(self.service.calls, 0)
 
     def test_filter_clears_old_detail_and_restores_selection_without_fetch(self):

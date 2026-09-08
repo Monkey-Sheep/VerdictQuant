@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFrame, QLabel, QPushButton, QScrollArea, QTextBrowser, QVBoxLayout, QWidget
 
 COLORS = {
     "background": "#f4f6f9", "surface": "#ffffff", "text": "#182337",
@@ -161,10 +161,11 @@ class MetricCard(QFrame):
 
 class Disclosure(QWidget):
     """Keyboard-accessible progressive disclosure, with no data side effects."""
-    def __init__(self, title: str, content: QWidget, parent=None):
+    def __init__(self, title: str, content: QWidget, parent=None, *, floating: bool = False):
         super().__init__(parent)
         self.content = content
         self._title = title
+        self.dialog = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(7)
@@ -174,12 +175,36 @@ class Disclosure(QWidget):
         self.button.setAccessibleName(title)
         self.button.toggled.connect(self._toggle)
         layout.addWidget(self.button)
-        layout.addWidget(content)
+        if floating:
+            self.dialog = QDialog(self)
+            self.dialog.setWindowTitle(title)
+            self.dialog.resize(780, 460)
+            apply_workbench_style(self.dialog)
+            dialog_layout = QVBoxLayout(self.dialog)
+            dialog_layout.setContentsMargins(22, 20, 22, 18)
+            dialog_layout.setSpacing(16)
+            dialog_layout.addWidget(label(title, "sectionTitle"))
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(content)
+            dialog_layout.addWidget(scroll, 1)
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            buttons.button(QDialogButtonBox.StandardButton.Close).setText("关闭")
+            buttons.rejected.connect(self.dialog.reject)
+            dialog_layout.addWidget(buttons)
+            self.dialog.finished.connect(lambda _: self.button.setChecked(False))
+        else:
+            layout.addWidget(content)
         content.hide()
 
     def _toggle(self, expanded: bool) -> None:
         self.button.setText(("⌄  " if expanded else "›  ") + self._title)
         self.content.setVisible(expanded)
+        if self.dialog is not None:
+            if expanded:
+                self.dialog.open()
+            else:
+                self.dialog.hide()
 
 
 class FitTextBrowser(QTextBrowser):

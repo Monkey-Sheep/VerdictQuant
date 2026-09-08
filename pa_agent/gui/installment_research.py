@@ -402,7 +402,8 @@ class InstallmentResearchWidget(QWidget):
         for information_label in (self.metadata, self.engine_note, self.usage_note, self.summary, self.plan_summary):
             information_label.setObjectName("mutedLabel")
             information_layout.addWidget(information_label)
-        self.information = Disclosure("研究信息与计划明细", information)
+        information_layout.addStretch()
+        self.information = Disclosure("研究信息与计划明细", information, floating=True)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
