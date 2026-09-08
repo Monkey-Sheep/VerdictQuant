@@ -1,7 +1,6 @@
 """Manual, cache-first installment research. No brokerage or execution actions."""
 from __future__ import annotations
 
-import copy
 import html
 import math
 import re
@@ -9,16 +8,21 @@ import threading
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from datetime import date, datetime, timezone
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QColor, QDesktopServices, QFont
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser,
     QVBoxLayout, QWidget,
 )
 
 from pa_agent.installment.models import SYMBOLS, CORE_SYMBOLS, THEMES, current_period
+from pa_agent.gui.investment_plan import InvestmentPlanDialog
+from pa_agent.gui.workbench_ui import (
+    Disclosure, FitTextBrowser, MetricCard, apply_workbench_style, document_html, empty_html,
+    format_time, label, set_tone, toolbar_button,
+)
 
 DEFAULT_ENGINE = {"kind": "codex_cli", "model": "gpt-5.3-codex-spark", "reasoning_effort": "high"}
 
@@ -73,7 +77,7 @@ def _percent(value):
 
 def _link(title, value):
     url = _https_url(value)
-    return f'<a href="{_text(url.toString())}" style="color:#7dd3fc">{_text(title)}</a>' if url else _text(title)
+    return f'<a href="{_text(url.toString())}" style="color:#2446d7">{_text(title)}</a>' if url else _text(title)
 
 
 def _source_category(source):
@@ -133,7 +137,7 @@ def _financial_table(fundamentals, source_index):
     fundamentals = fundamentals if isinstance(fundamentals, dict) else {}
     official, vendor = (fundamentals.get(key) or {} for key in ("official", "vendor"))
     parts = ['<p>各格保留原币种，不做汇率换算；TTM 指过去十二个月。缺失季度不会用全年或半年平均替代。</p>',
-             '<table width="100%" cellspacing="0" cellpadding="6" border="1"><tr><th>指标 / 期间</th><th>正式披露</th><th>供应商数据</th></tr>']
+             '<table width="100%" cellspacing="0" cellpadding="10" border="0"><tr><th>指标 / 期间</th><th>正式披露</th><th>供应商数据</th></tr>']
     for key, name in (("revenue", "营收"), ("net_income", "净利润"),
                       ("operating_cash_flow", "经营现金流"), ("capex", "资本开支")):
         for period, label in (("latest_quarter", "最近季度"), ("ttm", "TTM")):
@@ -147,7 +151,7 @@ def _financial_table(fundamentals, source_index):
 
 
 def _valuation_table(valuation, source_index):
-    parts = ['<table width="100%" cellspacing="0" cellpadding="6" border="1"><tr><th>观测指标</th><th>倍数</th><th>观测日期</th><th>来源 / 状态</th></tr>']
+    parts = ['<table width="100%" cellspacing="0" cellpadding="10" border="0"><tr><th>观测指标</th><th>倍数</th><th>观测日期</th><th>来源 / 状态</th></tr>']
     metrics = valuation.get("metrics") or {}
     for key, label in (("pe", "市盈率 PE"), ("ps", "市销率 PS"), ("ev_revenue", "企业价值 / 销售额")):
         node = metrics.get(key) or {}
@@ -224,143 +228,12 @@ def _sources_html(sources, evidence):
     return "".join(parts)
 
 
-class InvestmentPlanDialog(QDialog):
-    """Blank numeric entries stay unknown; displayed examples are never saved."""
-
-    def __init__(self, plan, symbols, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("投资计划 · 所有金额均为 USD")
-        self.resize(720, 760)
-        self._original = copy.deepcopy(plan)
-        self.plan = None
-        root = QVBoxLayout(self)
-        root.addWidget(_plain_label("填写你实际确认的计划。留空表示未知；研究判断不会自动成为投入记录。"))
-        form = QFormLayout()
-        self.fields = {}
-        specs = [
-            ("monthly_budget_usd", "每月新增预算（USD）", None),
-            ("horizon_years", "预计投资年限", None),
-            ("portfolio_total_usd", "总投资组合市值（USD）", None),
-            ("max_single_pct", "单只股票上限（占总组合 %）", 10),
-            ("max_theme_pct", "同一主题上限（占总组合 %）", 35),
-            ("higher_risk_installment_pct", "高风险时：单次使用本股剩余额度 %", 25),
-            ("normal_installment_pct", "正常时：单次使用本股剩余额度 %", 50),
-            ("attractive_installment_pct", "更有吸引力时：单次使用本股剩余额度 %", 100),
-            ("period", "本期（YYYY-MM）", current_period()),
-        ]
-        for key, label, default in specs:
-            value = plan.get(key, default)
-            edit = QLineEdit("" if value is None else str(value))
-            edit.setObjectName(key)
-            edit.setPlaceholderText("留空：未知" if key != "period" else "YYYY-MM")
-            self.fields[key] = edit
-            form.addRow(label, edit)
-        root.addLayout(form)
-        root.addWidget(_plain_label("单次分批比例只作用于该股票本月尚未投入的计划额度，不是全账户比例；须满足：高风险 ≤ 正常 ≤ 更有吸引力。可自行调整默认比例。"))
-        root.addWidget(_plain_label("目标权重用于分配新增预算，总和不能超过 100%。当前持仓不清楚时请留空。"))
-        root.addWidget(_plain_label("共享上限的直接持仓分组：" + "；".join(
-            f"{name}（{'、'.join(s for s in SYMBOLS if s in members)}）" for name, members in THEMES.items())
-            + "。最后一组是风险预算分组，不代表同一行业；基金重叠尚未穿透。"))
-        root.addWidget(_plain_label("核心基金只填写市值，不参与此处新增个股预算；非美元资产请按你确认的汇率折算为 USD。"))
-        root.addWidget(_plain_label("填写或重新确认持仓时，金额应包括此前已完成的投入。只修改预算或年限不更新未编辑持仓的确认时间；保存计划不代表交易。"))
-        self.assets = QTableWidget(len(symbols), 3)
-        self.assets.setHorizontalHeaderLabels(["股票", "新增预算目标权重 %", "当前持仓市值 USD"])
-        self.assets.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.assets.verticalHeader().setVisible(False)
-        for row, symbol in enumerate(symbols):
-            item = QTableWidgetItem(symbol)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.assets.setItem(row, 0, item)
-            for col, key in ((1, "target_weights"), (2, "positions_usd")):
-                value = (plan.get(key) or {}).get(symbol)
-                cell = QTableWidgetItem("" if value is None else str(value))
-                if col == 1 and symbol in CORE_SYMBOLS:
-                    cell.setText("不参与个股分配")
-                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.assets.setItem(row, col, cell)
-        root.addWidget(self.assets, 1)
-        self.confirm_holdings = QCheckBox("我已逐项更新并确认所有持仓市值（含已投入）")
-        self.confirm_holdings.setChecked(False)
-        self.confirm_holdings.setToolTip("只有你已逐项重新核对持仓时才勾选。普通保存预算或年限不更新未编辑股票的持仓确认时间。")
-        root.addWidget(self.confirm_holdings)
-        self.error = _plain_label()
-        self.error.setStyleSheet("color:#f59e0b")
-        root.addWidget(self.error)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存计划")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        buttons.accepted.connect(self._accept_plan)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-
-    @staticmethod
-    def _parse(text, label, maximum=None, integer=False, required=False):
-        text = text.strip()
-        if not text:
-            if required:
-                raise ValueError(f"请填写{label}。")
-            return None
-        try:
-            value = float(text)
-        except ValueError:
-            raise ValueError(f"{label}须为有效数字。") from None
-        if not math.isfinite(value) or value < 0 or (maximum is not None and value > maximum):
-            raise ValueError(f"{label}须在 0 至 {maximum} 之间。" if maximum is not None else f"{label}须为非负有限数字。")
-        if integer and (not value.is_integer() or value < 1):
-            raise ValueError(f"{label}须为大于零的整数。")
-        return int(value) if integer else value
-
-    def collect_plan(self):
-        plan = copy.deepcopy(self._original)
-        plan.pop("confirm_holdings", None)
-        for key in ("monthly_budget_usd", "portfolio_total_usd"):
-            plan[key] = self._parse(self.fields[key].text(), "金额（USD）", maximum=1_000_000_000)
-        plan["horizon_years"] = self._parse(self.fields["horizon_years"].text(), "投资年限", maximum=50, integer=True)
-        for key in ("max_single_pct", "max_theme_pct"):
-            plan[key] = self._parse(self.fields[key].text(), "比例上限", maximum=100, required=True)
-            if plan[key] < 0.1:
-                raise ValueError("比例上限至少为 0.1%。")
-        if plan["max_single_pct"] > plan["max_theme_pct"]:
-            raise ValueError("单只股票上限不能大于主题上限。")
-        for key in ("higher_risk_installment_pct", "normal_installment_pct", "attractive_installment_pct"):
-            plan[key] = self._parse(self.fields[key].text(), "单次分批比例", maximum=100, required=True)
-        if not plan["higher_risk_installment_pct"] <= plan["normal_installment_pct"] <= plan["attractive_installment_pct"]:
-            raise ValueError("单次分批比例须满足：高风险 ≤ 正常 ≤ 更有吸引力。")
-        period = self.fields["period"].text().strip()
-        if not re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", period):
-            raise ValueError("本期须为有效的 YYYY-MM，例如 2026-09。")
-        plan["period"] = period
-        weights, positions = {}, {}
-        for row in range(self.assets.rowCount()):
-            symbol = self.assets.item(row, 0).text()
-            if symbol not in CORE_SYMBOLS:
-                weight = self._parse(self.assets.item(row, 1).text(), f"{symbol} 目标权重", maximum=100)
-                if weight is not None:
-                    weights[symbol] = weight
-            positions[symbol] = self._parse(self.assets.item(row, 2).text(), f"{symbol} 持仓金额（USD）", maximum=1_000_000_000)
-        if sum(weights.values()) > 100 + 1e-8:
-            raise ValueError("新增预算目标权重总和不能超过 100%。")
-        if plan["portfolio_total_usd"] is not None and sum(v or 0 for v in positions.values()) > plan["portfolio_total_usd"] + .01:
-            raise ValueError("已填持仓市值之和不能超过总投资组合市值。")
-        plan.update(target_weights=weights, positions_usd=positions)
-        if self.confirm_holdings.isChecked():
-            plan["confirm_holdings"] = True
-        return plan
-
-    def _accept_plan(self):
-        try:
-            self.plan = self.collect_plan()
-        except ValueError as exc:
-            self.error.setText(str(exc))
-            return
-        self.accept()
-
-
 class EngineSettingsDialog(QDialog):
     """Feature-local routing only. API credentials remain in their existing settings."""
 
     def __init__(self, config, parent=None):
         super().__init__(parent)
+        apply_workbench_style(self)
         self.setWindowTitle("分批投资研究 · 模型设置")
         self.resize(620, 340)
         self.config = None
@@ -438,7 +311,9 @@ class EngineSettingsDialog(QDialog):
 
 
 class InstallmentResearchWidget(QWidget):
-    def __init__(self, parent=None, service=None):
+    refresh_state_changed = pyqtSignal(bool)
+
+    def __init__(self, parent=None, service=None, *, embedded=False):
         super().__init__(parent)
         if service is None:
             from pa_agent.installment.service import InstallmentService
@@ -463,87 +338,222 @@ class InstallmentResearchWidget(QWidget):
         self._contributions = []
         self._plan_dirty = False
         self._expired = False
+        self._chart_price = {}
+        self.setObjectName("installmentResearch")
+        apply_workbench_style(self)
         self.setWindowTitle("VerdictQuant · 分批投资研究")
-        self.resize(1220, 850)
+        self.resize(1140, 860)
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 16)
+        root.setContentsMargins(26, 23, 26, 16)
+        root.setSpacing(12)
         header = QHBoxLayout()
-        title = _plain_label("分批投资研究")
-        title.setStyleSheet("font-size:24px;font-weight:700")
-        header.addWidget(title)
+        heading = QVBoxLayout()
+        heading.setSpacing(5)
+        heading.addWidget(label("股票研究", "pageTitle"))
+        self.freshness = label("从上次研究继续，按计划分批投入。", "mutedLabel")
+        heading.addWidget(self.freshness)
+        header.addLayout(heading)
         header.addStretch()
-        self.refresh_button = QPushButton("更新分析")
-        self.refresh_button.setObjectName("primaryButton")
+        self.refresh_button = toolbar_button("更新分析", "refresh", primary=True)
         self.cancel_button = QPushButton("取消更新")
         self.cancel_button.setEnabled(False)
-        self.plan_button = QPushButton("投资计划")
-        self.model_button = QPushButton("模型设置")
-        for button in (self.refresh_button, self.cancel_button, self.plan_button, self.model_button):
-            button.setMinimumHeight(36)
+        self.cancel_button.hide()
+        self.plan_button = toolbar_button("投资计划", "plan")
+        self.model_button = toolbar_button("模型设置", "settings")
+        for button in (self.model_button, self.plan_button, self.cancel_button, self.refresh_button):
             header.addWidget(button)
+        self.model_button.setVisible(not embedded)
+        self.plan_button.setVisible(not embedded)
         root.addLayout(header)
+
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        self.condition_card = MetricCard("符合分批条件", "—", "等待研究结果")
+        self.monthly_card = MetricCard("本月预算", "待填写", "由投资计划设定")
+        self.spent_card = MetricCard("已登记投入", "—", "本机确认记录")
+        self.proposed_card = MetricCard("本期建议合计", "待确认", "先完成投资计划")
+        for card in (self.condition_card, self.monthly_card, self.spent_card, self.proposed_card):
+            cards.addWidget(card, 1)
+        root.addLayout(cards)
+
+        self.plan_notice = QFrame()
+        self.plan_notice.setObjectName("noticeCard")
+        notice_layout = QHBoxLayout(self.plan_notice)
+        notice_layout.setContentsMargins(13, 9, 12, 9)
+        self.plan_notice_text = label("完善预算与持仓，即可计算本期金额。", wrap=True)
+        self.plan_notice_text.setStyleSheet("color:#8a5b11;font-size:12px")
+        notice_layout.addWidget(self.plan_notice_text, 1)
+        notice_button = QPushButton("完善计划 →")
+        notice_button.setObjectName("textButton")
+        notice_button.clicked.connect(self.edit_plan)
+        notice_layout.addWidget(notice_button)
+        root.addWidget(self.plan_notice)
+
+        information = QWidget()
+        information_layout = QVBoxLayout(information)
+        information_layout.setContentsMargins(12, 0, 12, 4)
+        information_layout.setSpacing(6)
         self.engine_note = _plain_label()
         self._update_engine_note()
-        root.addWidget(self.engine_note)
         self.metadata = _plain_label("尚无保存结果")
-        root.addWidget(self.metadata)
         self.usage_note = _plain_label("尚无模型返回的实际用量；不估算剩余额度或费用。")
-        root.addWidget(self.usage_note)
-        self.summary = _plain_label("先填写投资计划，再手动更新分析。未知预算与持仓不会按零计算。")
-        root.addWidget(self.summary)
+        self.summary = _plain_label("手动更新后显示公司层判断。")
         self.plan_summary = _plain_label("投资计划尚待确认；金额为 USD。")
-        root.addWidget(self.plan_summary)
+        for information_label in (self.metadata, self.engine_note, self.usage_note, self.summary, self.plan_summary):
+            information_label.setObjectName("mutedLabel")
+            information_layout.addWidget(information_label)
+        information_layout.addStretch()
+        self.information = Disclosure("研究信息与计划明细", information, floating=True)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        left = QWidget()
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(12)
+        left = QFrame()
+        left.setObjectName("surfaceCard")
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setContentsMargins(12, 14, 12, 12)
+        left_layout.setSpacing(12)
+        watch_header = QHBoxLayout()
+        watch_header.addWidget(label("研究清单", "sectionTitle"))
+        watch_header.addStretch()
+        self.watch_count = label("0 只", "mutedLabel")
+        watch_header.addWidget(self.watch_count)
+        left_layout.addLayout(watch_header)
+        filters = QHBoxLayout()
+        filters.setSpacing(7)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索代码或名称")
+        self.search.setAccessibleName("搜索研究股票")
+        self.search.setClearButtonEnabled(True)
+        self.filter = QComboBox()
+        self.filter.setAccessibleName("按研究判断筛选")
+        for name, value in (("全部判断", "all"), ("可分批", "eligible"), ("暂缓新增", "pause"), ("待核验", "review")):
+            self.filter.addItem(name, value)
+        filters.addWidget(self.search, 1)
+        filters.addWidget(self.filter)
+        left_layout.addLayout(filters)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["股票", "当前判断", "收盘 USD", "本期建议 USD"])
+        self.table.setAccessibleName("股票研究清单")
+        self.table.setHorizontalHeaderLabels(["标的", "判断", "收盘 USD", "本期 USD"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setMinimumWidth(410)
+        self.table.verticalHeader().setDefaultSectionSize(60)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnHidden(2, True)
+        self.table.setMinimumWidth(300)
         left_layout.addWidget(self.table, 1)
-        self.contribution_button = QPushButton("记录本期已投入（USD）")
+        self.no_matches = label("没有匹配的股票，试试其他代码或判断。", "mutedLabel", wrap=True)
+        self.no_matches.hide()
+        left_layout.addWidget(self.no_matches)
+        self.contribution_button = QPushButton("登记已完成的投入")
         self.contribution_button.setEnabled(False)
         self.contribution_button.setToolTip("只登记你已完成的投入，不下单，不把研究建议当作成交。")
         left_layout.addWidget(self.contribution_button)
-        left_layout.addWidget(_plain_label("建议金额不是成交记录。所有股票金额为 USD；真实持仓只以你的确认记录为准。"))
+        left_layout.addWidget(label("名单代表研究范围，金额统一为 USD。", "metricNote"))
         splitter.addWidget(left)
+
+        right = QFrame()
+        right.setObjectName("surfaceCard")
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(18, 17, 18, 12)
+        right_layout.setSpacing(12)
+        identity = QHBoxLayout()
+        identity_text = QVBoxLayout()
+        identity_text.setSpacing(3)
+        self.stock_title = label("选择一只股票", "stockTitle")
+        self.stock_subtitle = label("查看价格、判断与依据", "mutedLabel")
+        identity_text.addWidget(self.stock_title)
+        identity_text.addWidget(self.stock_subtitle)
+        identity.addLayout(identity_text, 1)
+        self.decision_badge = label("待研究", "decisionBadge")
+        set_tone(self.decision_badge, "muted")
+        identity.addWidget(self.decision_badge)
+        right_layout.addLayout(identity)
+        key_metrics = QHBoxLayout()
+        self.stock_metrics = {}
+        for key, caption in (("price", "最近收盘 · USD"), ("drawdown", "较区间高点"), ("budget", "本期建议 · USD")):
+            metric = QVBoxLayout()
+            metric.setSpacing(5)
+            metric.addWidget(label(caption, "eyebrow"))
+            value = label("—")
+            value.setStyleSheet("font-size:21px;font-weight:600;color:#182337")
+            metric.addWidget(value)
+            key_metrics.addLayout(metric, 1)
+            self.stock_metrics[key] = value
+        right_layout.addLayout(key_metrics)
+        self.selection_warning = label("", wrap=True)
+        self.selection_warning.setStyleSheet("color:#8a5b11;background:#fff9ed;border-radius:6px;padding:8px;font-size:12px")
+        self.selection_warning.hide()
+        right_layout.addWidget(self.selection_warning)
         self.tabs = QTabWidget()
-        self.details = self._browser()
-        self.tabs.addTab(self.details, "判断详情")
-        chart_page = QWidget()
-        chart_layout = QVBoxLayout(chart_page)
+        self.tabs.setDocumentMode(True)
+        overview_scroll = QScrollArea()
+        overview_scroll.setWidgetResizable(True)
+        overview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        overview = QWidget()
+        overview_layout = QVBoxLayout(overview)
+        overview_layout.setContentsMargins(0, 13, 0, 0)
+        overview_layout.setSpacing(8)
+        self.details = self._browser(auto_height=True)
+        overview_layout.addWidget(self.details)
+        chart_header = QHBoxLayout()
+        chart_header.addWidget(label("价格走势", "sectionTitle"))
+        chart_header.addStretch()
+        self.chart_range = QComboBox()
+        self.chart_range.setAccessibleName("走势图时间范围")
+        for caption, days in (("近 1 月", 30), ("近 3 月", 90), ("近 1 年", 365), ("全部历史", None)):
+            self.chart_range.addItem(caption, days)
+        self.chart_range.setCurrentIndex(3)
+        chart_header.addWidget(self.chart_range)
+        overview_layout.addLayout(chart_header)
         self.chart_note = _plain_label("仅显示真实历史收盘价，不生成预测曲线。")
-        chart_layout.addWidget(self.chart_note)
+        self.chart_note.setObjectName("metricNote")
         self.chart = None
         try:
             import pyqtgraph as pg
             self.chart = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem(utcOffset=0)})
-            self.chart.setBackground("#0a0e14")
-            self.chart.showGrid(x=True, y=True, alpha=0.2)
-            self.chart.setLabel("left", "历史收盘价", units="USD")
-            self.chart.setLabel("bottom", "交易日期")
+            self.chart.setBackground("#ffffff")
+            self.chart.setMinimumHeight(180)
+            self.chart.setMaximumHeight(200)
+            self.chart.showGrid(x=False, y=True, alpha=0.12)
+            for axis_name in ("left", "bottom"):
+                axis = self.chart.getAxis(axis_name)
+                axis.setPen(pg.mkPen("#d7deea"))
+                axis.setTextPen(pg.mkPen("#657187"))
+                axis.setStyle(tickFont=QFont("Segoe UI", 9))
             self.chart.setMenuEnabled(False)
-            chart_layout.addWidget(self.chart, 1)
+            self.chart.setMouseEnabled(x=False, y=False)
+            overview_layout.addWidget(self.chart)
         except ImportError:
-            chart_layout.addWidget(_plain_label("图表组件不可用，仍可在判断详情中查看价格和数据缺口。"))
-        self.tabs.addTab(chart_page, "走势图")
+            overview_layout.addWidget(label("图表暂不可用，价格与依据仍可查看。", "mutedLabel"))
+        overview_layout.addWidget(self.chart_note)
+        overview_layout.addStretch()
+        overview_scroll.setWidget(overview)
+        self.tabs.addTab(overview_scroll, "概览")
+        self.thesis = self._browser()
+        self.tabs.addTab(self.thesis, "依据与风险")
+        self.financials = self._browser()
+        self.tabs.addTab(self.financials, "估值与财务")
         self.sources = self._browser()
         self.tabs.addTab(self.sources, "来源")
         history_page = QWidget()
         history_layout = QVBoxLayout(history_page)
-        history_layout.addWidget(_plain_label("历史判断仅供复盘。选中记录查看当时的数据与来源，不能视为当前建议。"))
+        history_layout.setContentsMargins(0, 14, 0, 0)
+        history_layout.addWidget(label("历史研究", "sectionTitle"))
+        history_layout.addWidget(label("选择一次分析，回看当时的判断与来源。", "mutedLabel"))
         self.history_table = QTableWidget(0, 2)
         self.history_table.setHorizontalHeaderLabels(["分析时间", "摘要"])
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.history_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.verticalHeader().setDefaultSectionSize(44)
+        self.history_table.setShowGrid(False)
         history_layout.addWidget(self.history_table, 1)
         history_buttons = QHBoxLayout()
         self.history_open_button = QPushButton("查看所选历史")
@@ -551,7 +561,7 @@ class InstallmentResearchWidget(QWidget):
         history_buttons.addWidget(self.history_open_button)
         history_buttons.addWidget(self.latest_button)
         history_layout.addLayout(history_buttons)
-        history_layout.addWidget(_plain_label("已确认投入台账（本地） · 用户登记，未经券商核验"))
+        history_layout.addWidget(label("已登记投入", "sectionTitle"))
         self.ledger_note = _plain_label("尚无实际投入记录。")
         history_layout.addWidget(self.ledger_note)
         self.ledger_table = QTableWidget(0, 5)
@@ -559,25 +569,42 @@ class InstallmentResearchWidget(QWidget):
         self.ledger_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.ledger_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ledger_table.verticalHeader().setVisible(False)
+        self.ledger_table.verticalHeader().setDefaultSectionSize(42)
+        self.ledger_table.setShowGrid(False)
         self.ledger_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.ledger_table.horizontalHeader().setStretchLastSection(True)
         history_layout.addWidget(self.ledger_table, 1)
-        self.ledger_refresh_button = QPushButton("重读本地台账与预算（不联网）")
+        self.ledger_refresh_button = QPushButton("重读台账与预算")
+        self.ledger_refresh_button.setToolTip("只重读本机记录，不联网、不调用模型。")
         self.ledger_refresh_button.clicked.connect(lambda: self._reload_local_state("本地台账与预算已重读；未联网、未调用模型。"))
         history_layout.addWidget(self.ledger_refresh_button)
-        self.tabs.addTab(history_page, "历史")
-        splitter.addWidget(self.tabs)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
+        self.tabs.addTab(history_page, "记录")
+        right_layout.addWidget(self.tabs, 1)
+        splitter.addWidget(right)
+        splitter.setSizes([350, 680])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
-        self.status = _plain_label("仅读取本地保存结果；不会定时更新，也不会执行交易。")
-        root.addWidget(self.status)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.hide()
+        root.addWidget(self.progress_bar)
+        self.status = label("本地保存结果 · 点击更新才联网", "statusLabel", wrap=True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        footer = QHBoxLayout()
+        footer.addWidget(self.information, 3)
+        footer.addWidget(self.status, 2)
+        root.addLayout(footer)
         self.refresh_button.clicked.connect(self.refresh_data)
         self.cancel_button.clicked.connect(self.cancel_refresh)
         self.plan_button.clicked.connect(self.edit_plan)
         self.model_button.clicked.connect(self.edit_model)
         self.contribution_button.clicked.connect(self.record_contribution)
         self.table.currentCellChanged.connect(self._show_selection)
+        self.search.textChanged.connect(self._filter_rows)
+        self.filter.currentIndexChanged.connect(self._filter_rows)
+        self.chart_range.currentIndexChanged.connect(lambda: self._plot(self._chart_price))
         self.history_open_button.clicked.connect(self.open_history)
         self.history_table.cellDoubleClicked.connect(lambda *_: self.open_history())
         self.latest_button.clicked.connect(self.show_latest)
@@ -594,12 +621,14 @@ class InstallmentResearchWidget(QWidget):
         if app:
             app.aboutToQuit.connect(self.shutdown)
 
-    def _browser(self):
-        browser = QTextBrowser()
+    def _browser(self, *, auto_height=False):
+        browser = FitTextBrowser() if auto_height else QTextBrowser()
         browser.setOpenExternalLinks(False)
         browser.setOpenLinks(False)
         browser.anchorClicked.connect(self._open_source)
-        browser.setStyleSheet("QTextBrowser { padding:12px; font-size:14px; }")
+        browser.document().setDefaultFont(QFont("Microsoft YaHei UI", 10))
+        browser.document().setDocumentMargin(8)
+        browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return browser
 
     def _open_source(self, value):
@@ -647,17 +676,25 @@ class InstallmentResearchWidget(QWidget):
                                else "该快照未提供实际模型用量；不估算剩余额度或费用。")
 
     def _render(self, result, historical=False):
+        previous_symbol = (self._selected() or {}).get("symbol")
         self._result = result if isinstance(result, dict) else None
         self._historical = historical
         if not self._result:
             self.table.setRowCount(0)
+            self._expired = False
             self.metadata.setText("尚无保存的研究结果")
-            self.summary.setText("手动更新分析后显示逐股判断；本地台账仍可在历史页查看。")
+            self.freshness.setText("暂无研究结果 · 点击更新分析开始")
+            self.summary.setText("手动更新分析后显示逐股判断；本地台账仍可在记录页查看。")
             self.plan_summary.setText("投资计划与台账仅在本地保存，未产生新的模型判断。")
             self.contribution_button.setEnabled(False)
             self._show_usage(None)
-            self.details.setHtml("<h2>尚无保存的研究</h2><p>填写投资计划，然后点击“更新分析”。</p>")
-            self.sources.setHtml("<p>手动更新后显示实际使用的公开来源。</p>")
+            self.condition_card.update_value("—", "等待研究结果")
+            self.monthly_card.update_value("待填写", "在投资计划中确认")
+            self.spent_card.update_value("—", "本机确认记录")
+            self.proposed_card.update_value("待确认", "更新研究并完善计划")
+            self.watch_count.setText("0 只")
+            self.plan_notice.show()
+            self._clear_selection()
             return
         provider = result.get("provider") or {}
         engine_stale = self._engine_is_stale(result)
@@ -677,40 +714,95 @@ class InstallmentResearchWidget(QWidget):
         self.metadata.setText(prefix + f"分析时间：{result.get('generated_at') or '未知'}  |  "
                               f"价格截至：{result.get('price_as_of') or '待核实'}  |  "
                               f"模型：{provider.get('model') or '未配置'}  |  状态：{provider.get('status') or '未知'}")
+        freshness_state = "历史快照" if historical else "需更新" if self._expired or engine_stale else "已保存"
+        self.freshness.setText(f"{freshness_state} · 行情截至 {result.get('price_as_of') or '待核实'} · 分析 {format_time(result.get('generated_at'), short=True)}（北京时间）")
+        self.freshness.setToolTip(self.metadata.text())
         self._show_usage(result)
         self.summary.setText(str(result.get("summary") or "部分研究仍待核实，请逐只查看详情。"))
         plan_status = result.get("plan_status") or {}
-        if isinstance(plan_status, dict):
-            self.plan_summary.setText(f"计划月份：{plan_status.get('month') or '待确认'}  |  "
-                f"本月预算：{_money(plan_status.get('budget_usd'))} USD  |  "
-                f"已确认投入：{_money(plan_status.get('confirmed_spent_usd'))} USD  |  "
-                f"本次建议合计：{_money(plan_status.get('proposed_usd'))} USD  |  "
-                f"尚未分配：{_money(plan_status.get('remaining_unallocated_usd'))} USD\n"
-                + ("计划信息已齐备。" if plan_status.get("ready") else "计划缺口：" + "；".join(str(v) for v in plan_status.get("gaps", [])))
-                + str(plan_status.get("note") or ""))
+        if not isinstance(plan_status, dict):
+            plan_status = {}
+        self.plan_summary.setText(f"计划月份：{plan_status.get('month') or '待确认'}  |  "
+            f"本月预算：{_money(plan_status.get('budget_usd'))} USD  |  "
+            f"已确认投入：{_money(plan_status.get('confirmed_spent_usd'))} USD  |  "
+            f"本次建议合计：{_money(plan_status.get('proposed_usd'))} USD  |  "
+            f"尚未分配：{_money(plan_status.get('remaining_unallocated_usd'))} USD。 "
+            + ("计划信息已齐备。" if plan_status.get("ready") else "计划缺口：" + "；".join(str(v) for v in plan_status.get("gaps", [])))
+            + str(plan_status.get("note") or ""))
         assessments = result.get("assessments") or []
-        self.table.setRowCount(len(assessments))
-        for row, item in enumerate(assessments):
-            price = item.get("price") or {}
-            budget = item.get("budget") or {}
-            stale = not historical and (self._plan_dirty or self._expired or engine_stale)
-            values = [item.get("symbol", "未知"), "待更新" if stale else item.get("decision_label") or "待复核",
-                      _money(price.get("close")), ("待更新计划" if self._plan_dirty else "旧模型待更新" if engine_stale else "已过期待更新")
-                      if stale else _money(budget.get("amount_usd"))]
-            for col, value in enumerate(values):
-                cell = QTableWidgetItem(str(value))
-                if col >= 2:
-                    cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(row, col, cell)
+        eligible = sum(item.get("decision") in {"START", "NORMAL", "INCREASE"} for item in assessments)
+        stale = not historical and (self._plan_dirty or self._expired or engine_stale)
+        self.condition_card.update_value("待更新" if stale else f"{eligible} / {len(assessments)}", "公司层判断 · 金额受计划约束", "brand")
+        self.monthly_card.update_value(_money(plan_status.get("budget_usd")), f"{plan_status.get('month') or current_period()} · USD")
+        self.spent_card.update_value(_money(plan_status.get("confirmed_spent_usd")), "已确认的本机投入记录 · USD")
+        proposed = "待更新" if stale else _money(plan_status.get("proposed_usd")) if plan_status.get("ready") else "待完善计划"
+        self.proposed_card.update_value(proposed, "历史金额，仅供复盘" if historical else "按计划计算 · USD")
+        self.plan_notice.setVisible(not plan_status.get("ready") and not historical)
+        self.plan_notice_text.setText("预算与持仓尚待确认，先看公司判断；完善计划后显示本期金额。")
+        self.plan_notice_text.setToolTip("；".join(str(value) for value in plan_status.get("gaps") or []))
+        self.watch_count.setText(f"{len(assessments)} 只")
+        short_labels = {"START": "小额开始", "NORMAL": "正常投入", "INCREASE": "更有吸引力", "PAUSE": "暂缓新增", "REVIEW": "待核验"}
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(len(assessments))
+            for row, item in enumerate(assessments):
+                price = item.get("price") or {}
+                budget = item.get("budget") or {}
+                values = [f"{item.get('symbol', '未知')}\n{item.get('name') or ''}", "待更新" if stale else short_labels.get(item.get("decision"), item.get("decision_label") or "待复核"),
+                          _money(price.get("close")), ("待更新计划" if self._plan_dirty else "旧模型待更新" if engine_stale else "已过期待更新")
+                          if stale else _money(budget.get("amount_usd"))]
+                for col, value in enumerate(values):
+                    cell = QTableWidgetItem(str(value))
+                    cell.setToolTip(str(item.get("decision_label") or "") if col == 1 else str(budget.get("reason") or "") if col == 3 else str(value))
+                    if col == 1:
+                        color = "#657187" if stale else {"START": "#16724c", "NORMAL": "#16724c", "INCREASE": "#2446d7", "PAUSE": "#9d6a1a"}.get(item.get("decision"), "#657187")
+                        cell.setForeground(QColor(color))
+                    if col >= 2:
+                        cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.table.setItem(row, col, cell)
+        finally:
+            self.table.blockSignals(False)
         if assessments:
-            self.table.selectRow(0)
+            selected_row = next((n for n, item in enumerate(assessments) if item.get("symbol") == previous_symbol), 0)
+            self.table.selectRow(selected_row)
             self._show_selection()
         else:
-            self.details.setHtml("<p>本次没有可显示的股票判断，请查看更新状态并重试。</p>")
-            self.sources.clear()
-            if self.chart:
-                self.chart.clear()
-        self.contribution_button.setEnabled(bool(assessments) and not historical and self._future is None)
+            self._clear_selection()
+        self._filter_rows()
+
+    def _filter_rows(self, *_):
+        query = self.search.text().strip().casefold()
+        mode = self.filter.currentData()
+        visible = []
+        stale = not self._historical and (self._plan_dirty or self._expired or self._engine_is_stale(self._result))
+        for row, item in enumerate((self._result or {}).get("assessments") or []):
+            decision = "REVIEW" if stale else item.get("decision")
+            matches = query in f"{item.get('symbol', '')} {item.get('name', '')}".casefold()
+            matches = matches and (mode == "all" or mode == "eligible" and decision in {"START", "NORMAL", "INCREASE"}
+                                   or mode == "pause" and decision == "PAUSE" or mode == "review" and decision == "REVIEW")
+            self.table.setRowHidden(row, not matches)
+            if matches:
+                visible.append(row)
+        self.no_matches.setVisible(not visible and bool(self._result))
+        if not visible:
+            self.table.setCurrentCell(-1, -1)
+            self._clear_selection()
+        elif self.table.currentRow() not in visible:
+            self.table.selectRow(visible[0])
+        self.contribution_button.setEnabled(bool(visible) and not self._historical and self._future is None)
+
+    def _clear_selection(self):
+        self.stock_title.setText("选择一只股票")
+        self.stock_subtitle.setText("查看价格、判断与依据")
+        self.decision_badge.setText("待选择")
+        set_tone(self.decision_badge, "muted")
+        for value in self.stock_metrics.values():
+            value.setText("—")
+        self.selection_warning.hide()
+        self.details.setHtml(empty_html("从一只股票开始", "选择研究清单中的股票，或手动更新分析。"))
+        for browser in (self.thesis, self.financials, self.sources):
+            browser.setHtml(empty_html("暂无内容", "选择股票后查看对应的依据和来源。"))
+        self._plot({})
 
     def _selected(self):
         row = self.table.currentRow()
@@ -720,6 +812,7 @@ class InstallmentResearchWidget(QWidget):
     def _show_selection(self, *_):
         item = self._selected()
         if not item:
+            self._clear_selection()
             return
         price, valuation, budget = (item.get(k) or {} for k in ("price", "valuation", "budget"))
         evidence = ((self._result or {}).get("public_evidence") or {}).get(item.get("symbol")) or {}
@@ -733,41 +826,67 @@ class InstallmentResearchWidget(QWidget):
                   "ps_ttm": "过去十二个月市销率", "ev_sales": "企业价值与销售额之比"}.get(valuation.get("method"), "待核实")
         scenario = valuation.get("scenario_price_range")
         scenario_text = (f"{_money(scenario[0])} 至 {_money(scenario[1])} USD" if isinstance(scenario, list) and len(scenario) == 2 else "待核实")
-        history = "<p><b>历史快照：以下内容不代表当前建议。</b></p>" if self._historical else ""
-        dirty = "<p><b>计划或投入记录已变化：本页金额来自旧计划，需手动更新后使用。</b></p>" if self._plan_dirty and not self._historical else ""
-        expired = "<p><b>有效期已过或无法确认：以下是原快照，仅供复盘，请手动更新后再决定本期投入。</b></p>" if self._expired and not self._historical else ""
-        engine_warning = "<p><b>引擎设置已变更：以下仍是旧模型的结果，需手动更新才使用新引擎分析。</b></p>" if self._engine_is_stale(self._result) and not self._historical else ""
-        self.details.setHtml(history + dirty + expired + engine_warning + f"<h2>{_text(item.get('symbol'))} · {_text(item.get('name'))}</h2>"
-            f"<h3>{_text(item.get('decision_label'))}</h3><p>模型判断把握（非上涨概率）：{confidence}</p>"
-            f"<p>模型判断生成时间：{_text(item.get('model_generated_at') or (self._result or {}).get('generated_at'))}。"
+        warnings = []
+        if self._historical:
+            warnings.append("历史快照，仅供复盘，不代表当前建议。")
+        else:
+            if self._plan_dirty:
+                warnings.append("计划或投入记录已变化：旧计划金额暂不使用。")
+            if self._expired:
+                warnings.append("有效期已过或未确认：仅供复盘，请手动更新。")
+            if self._engine_is_stale(self._result):
+                warnings.append("模型设置已变更：当前仍为旧模型结果，请手动更新。")
+        warning_html = "".join(f'<p style="color:#8a5b11"><b>{_text(warning)}</b></p>' for warning in warnings)
+        self.selection_warning.setText(" ".join(warnings))
+        self.selection_warning.setVisible(bool(warnings))
+        stale = bool(warnings) and not self._historical
+        decision = item.get("decision")
+        short_labels = {"START": "小额开始", "NORMAL": "正常投入", "INCREASE": "更有吸引力", "PAUSE": "暂缓新增", "REVIEW": "待核验"}
+        self.stock_title.setText(f"{item.get('symbol') or '未知'} · {item.get('name') or '名称待核实'}")
+        self.stock_subtitle.setText(f"行情日期 {price.get('date') or '待核实'} · {'历史研究' if self._historical else '公司层研究'}")
+        self.decision_badge.setText("需要更新" if stale else short_labels.get(decision, "待核验"))
+        self.decision_badge.setToolTip(str(item.get("decision_label") or "待核验"))
+        set_tone(self.decision_badge, "warning" if stale else {"START": "positive", "NORMAL": "positive", "INCREASE": "brand", "PAUSE": "warning"}.get(decision, "muted"))
+        self.stock_metrics["price"].setText(_money(price.get("close")))
+        self.stock_metrics["drawdown"].setText(_percent(price.get("drawdown_pct")))
+        amount = "待更新" if stale else _money(budget.get("amount_usd"))
+        self.stock_metrics["budget"].setText(amount)
+        self.stock_metrics["budget"].setToolTip(str(budget.get("reason") or ""))
+        self.details.setHtml(document_html(warning_html
+            + f"<h3>本期判断 · {_text(item.get('decision_label'))}</h3>"
+            + f"<p>{_text(item.get('summary'))}</p>"
+            + f"<p style='color:#657187'>下次复核：{_text(item.get('next_review'))}</p>"))
+        self.thesis.setHtml(document_html(warning_html
+            + f"<h2>判断依据</h2><p>{_text(item.get('summary'))}</p>{_items(item.get('reasons'))}"
+            + f"<h3>需要承担的风险</h3>{_items(item.get('risks'))}"
+            + f"<h3>本期投入安排</h3><p><b>{_money(budget.get('amount_usd'))} USD · {_text(budget.get('label'))}</b></p>"
+            + f"<p>{_text(budget.get('reason'))}</p>"
+            + f"<p>本期已确认投入：{_money(budget.get('spent_this_month_usd'))} USD。{_text(budget.get('note'))}</p>"
+            + _overlap_html(item.get("symbol"))
+            + f"<h3>何时复核</h3><p>{_text(item.get('next_review'))}</p>"
+            + f"<p>结果有效至：{_text(format_time((self._result or {}).get('valid_until')))}（北京时间）</p>"
+            + f"<h3>什么变化会推翻判断</h3>{_items(item.get('invalidators'))}"
+            + f"<h3>与上次研究的差异</h3>{_comparison_html((self._result or {}).get('comparison'), item.get('symbol'))}"
+            + f"<h3>研究记录</h3><p>模型判断把握（非上涨概率）：{confidence}</p>"
+            + f"<p>模型判断生成时间：{_text(format_time(item.get('model_generated_at') or (self._result or {}).get('generated_at')))}（北京时间）。"
             + ("本次该股证据未变，复用有效判断。</p>" if item.get("model_reused") else "</p>")
-            +
-            f"<p>{_text(item.get('summary'))}</p>"
-            f"<p><b>本期建议：{_money(budget.get('amount_usd'))} USD</b>　{_text(budget.get('label'))}</p>"
-            f"<p>{_text(budget.get('reason'))}</p>"
-            f"<p>本期已确认投入：{_money(budget.get('spent_this_month_usd'))} USD。{_text(budget.get('note'))}</p>"
-            + _overlap_html(item.get("symbol")) +
-            f"<h3>判断依据</h3>{_items(item.get('reasons'))}"
-            f"<h3>需要承担的风险</h3>{_items(item.get('risks'))}"
-            f"<h3>价格与估值</h3><p>最近收盘：{_money(price.get('close'))} USD；"
-            f"交易日期：{_text(price.get('date'))}。{_text(price.get('label'))}</p>"
-            f"<p>相对区间高点变动：{_percent(price.get('drawdown_pct'))}；区间价格分位：{_percent(price.get('percentile'))}；"
-            f"有效历史天数：{_text(price.get('history_days'))}。价格分位不代表估值或上涨概率。</p>"
-            f"<p>{_text(valuation.get('label'))} · {method}</p>"
-            f"<p>{_text(valuation.get('explanation'))}</p>{_valuation_table(valuation, source_index)}"
-            f"<p>模型假设推算价格区间：{scenario_text}。</p>"
-            f"<p>{_text(valuation.get('warning'), '该区间不是价格预测或收益保证。')}</p>"
-            f"<p><b>区间依赖的假设</b></p>{_items(valuation.get('assumptions'))}"
-            f"<h3>经营事实</h3>{_financial_table(item.get('fundamentals'), source_index)}"
-            f"<h3>何时复核</h3><p>{_text(item.get('next_review'))}</p>"
-            f"<p>结果有效至：{_text((self._result or {}).get('valid_until'))}</p>"
-            f"<h3>什么变化会推翻判断</h3>{_items(item.get('invalidators'))}"
-            f"<h3>与上次研究的差异</h3>{_comparison_html((self._result or {}).get('comparison'), item.get('symbol'))}"
-            + ("<p><b>部分数据或模型结果未通过校验，不完整信息已保留为待核实。</b></p>" if item.get("errors") else ""))
-        self.sources.setHtml(_sources_html(list(source_rows.values()), evidence))
+            + ("<p><b>部分数据或模型结果未通过校验，不完整信息已保留为待核实。</b></p>" if item.get("errors") else "")))
+        self.financials.setHtml(document_html(warning_html
+            + "<h2>价格与估值</h2>"
+            + f"<p>最近收盘：{_money(price.get('close'))} USD · 交易日期 {_text(price.get('date'))}</p>"
+            + f"<p>相对区间高点变动：{_percent(price.get('drawdown_pct'))} · 区间价格分位：{_percent(price.get('percentile'))} · "
+            + f"有效历史天数：{_text(price.get('history_days'))}。价格分位不代表估值或上涨概率。</p>"
+            + f"<h3>{_text(valuation.get('label'))} · {method}</h3>"
+            + f"<p>{_text(valuation.get('explanation'))}</p>{_valuation_table(valuation, source_index)}"
+            + f"<h3>情景假设</h3><p>模型假设推算价格区间：<b>{scenario_text}</b></p>"
+            + f"<p>{_text(valuation.get('warning'), '该区间不是价格预测或收益保证。')}</p>"
+            + _items(valuation.get('assumptions'))
+            + f"<h2>经营事实</h2>{_financial_table(item.get('fundamentals'), source_index)}"))
+        self.sources.setHtml(document_html(_sources_html(list(source_rows.values()), evidence)))
         self._plot(price)
 
     def _plot(self, price):
+        self._chart_price = price
         if self.chart is None:
             return
         self.chart.clear()
@@ -784,11 +903,15 @@ class InstallmentResearchWidget(QWidget):
             except (TypeError, ValueError, OverflowError):
                 continue
             points[timestamp] = close
+        days = self.chart_range.currentData()
+        if points and days is not None:
+            cutoff = max(points) - int(days) * 86400
+            points = {stamp: close for stamp, close in points.items() if stamp >= cutoff}
         self.chart_note.setText(f"真实历史收盘价 · {len(points)} 个有效交易日 · USD。非预测；缺失值未按零补齐。" if points else "暂无有效历史价格，不能绘制走势图。缺失数据不按零处理。")
         if points:
             import pyqtgraph as pg
             ordered = sorted(points)
-            self.chart.plot(ordered, [points[x] for x in ordered], pen=pg.mkPen("#38bdf8", width=2),
+            self.chart.plot(ordered, [points[x] for x in ordered], pen=pg.mkPen("#2446d7", width=2.4),
                             symbol="o" if len(ordered) == 1 else None, symbolSize=6)
             self.chart.enableAutoRange()
 
@@ -803,6 +926,9 @@ class InstallmentResearchWidget(QWidget):
             button.setEnabled(False)
         self.refresh_button.setText("更新中…")
         self.cancel_button.setEnabled(True)
+        self.cancel_button.show()
+        self.progress_bar.show()
+        self.refresh_state_changed.emit(True)
         self.status.setText("正在更新公开数据与模型分析，仍可查看上次结果。" + ("本机 Codex 将消耗订阅额度。" if self._engine.get("kind") == "codex_cli" else "API 调用单独计费。"))
         self._future = self._executor.submit(self.service.refresh, cancelled=self._cancelled, progress=self._progress)
         self._poll.start()
@@ -849,12 +975,15 @@ class InstallmentResearchWidget(QWidget):
             self.contribution_button.setEnabled(self._selected() is not None and not self._historical)
             self.cancel_button.setEnabled(False)
             self.refresh_button.setText("更新分析")
+            self.cancel_button.hide()
+            self.progress_bar.hide()
+            self.refresh_state_changed.emit(False)
 
     def _load_history(self):
         self._history = self.service.history() or []
         self.history_table.setRowCount(len(self._history))
         for row, item in enumerate(self._history):
-            self.history_table.setItem(row, 0, QTableWidgetItem(str(item.get("generated_at") or item.get("run_id") or "未知")))
+            self.history_table.setItem(row, 0, QTableWidgetItem(format_time(item.get("generated_at") or item.get("run_id"))))
             self.history_table.setItem(row, 1, QTableWidgetItem(str(item.get("summary") or "保存的研究快照")))
         self.history_table.resizeColumnToContents(0)
         self._load_ledger()
@@ -868,7 +997,7 @@ class InstallmentResearchWidget(QWidget):
                 amount = _number(item.get("amount_usd"))
                 if amount is not None:
                     current_total += amount
-            values = [item.get("confirmed_at") or "待核实", item.get("period") or "待核实",
+            values = [format_time(item.get("confirmed_at")), item.get("period") or "待核实",
                       item.get("symbol") or "待核实", _money(item.get("amount_usd")), item.get("source_ref") or "待核实"]
             for col, value in enumerate(values):
                 cell = QTableWidgetItem(str(value))
@@ -902,7 +1031,7 @@ class InstallmentResearchWidget(QWidget):
                 raise ValueError("Missing run")
             self._render(result, historical=True)
             self.tabs.setCurrentIndex(0)
-            self.status.setText("正在查看历史快照；点击“历史 → 返回最新保存结果”恢复。")
+            self.status.setText("正在查看历史快照；点击“记录 → 返回最新保存结果”恢复。")
         except Exception:
             self.status.setText("这条历史记录暂时无法读取，当前页面已保留。")
 
@@ -933,9 +1062,7 @@ class InstallmentResearchWidget(QWidget):
 
     def _mark_plan_changed(self, text):
         self._plan_dirty = True
-        for row in range(self.table.rowCount()):
-            self.table.setItem(row, 3, QTableWidgetItem("待更新计划"))
-        self._show_selection()
+        self._render(self._result, historical=self._historical)
         self.status.setText(text)
 
     def edit_model(self):
