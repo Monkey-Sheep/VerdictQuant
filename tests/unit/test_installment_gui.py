@@ -181,8 +181,8 @@ class InstallmentQtTests(unittest.TestCase):
 
     def test_text_is_escaped_and_only_https_can_open(self):
         self.assertIn("<b>untrusted</b>", self.widget.details.toPlainText())
-        self.assertIn("<img src=", self.widget.details.toPlainText())
-        self.assertNotIn('<img src="https://bad.invalid', self.widget.details.toHtml())
+        self.assertIn("<img src=", self.widget.thesis.toPlainText())
+        self.assertNotIn('<img src="https://bad.invalid', self.widget.thesis.toHtml())
         self.assertIn("<strong>source</strong>", self.widget.sources.toPlainText())
         self.assertNotIn('href="file:', self.widget.sources.toHtml())
         with patch("pa_agent.gui.installment_research.QDesktopServices.openUrl") as opened:
@@ -460,7 +460,7 @@ class InstallmentQtTests(unittest.TestCase):
 
     def test_nested_financials_are_compact_currency_and_period_aware(self):
         self.widget._render(nested_result())
-        text = self.widget.details.toPlainText()
+        text = self.widget.financials.toPlainText()
         for expected in ("正式披露", "供应商数据", "最近季度", "TTM", "经营现金流", "资本开支",
                          "2.00 亿 USD", "3.00 亿 KRW", "0.00 USD", "-2.00 百万 USD",
                          "2026-06-30", "2026-08-01", "据披露计算", "未取得"):
@@ -470,11 +470,11 @@ class InstallmentQtTests(unittest.TestCase):
         data = nested_result()
         data["assessments"][0]["fundamentals"]["official"]["metrics"]["revenue"]["latest_quarter"]["unit"] = None
         self.widget._render(data)
-        self.assertIn("币种缺失，金额待核实", self.widget.details.toPlainText())
+        self.assertIn("币种缺失，金额待核实", self.widget.financials.toPlainText())
 
     def test_nested_valuation_and_comparison_are_selected_stock_only(self):
         self.widget._render(nested_result())
-        text = self.widget.details.toPlainText()
+        text = self.widget.financials.toPlainText() + self.widget.thesis.toPlainText()
         for expected in ("20.12 倍", "3.57 倍", "企业价值 / 销售额", "观测日期", "-12.35%", "67.89%",
                          "模型判断把握（非上涨概率）", "上次：本次证据不足", "本次：可按正常节奏投入", "经营数据已补齐"):
             self.assertIn(expected, text)
@@ -483,7 +483,47 @@ class InstallmentQtTests(unittest.TestCase):
         data = nested_result()
         data["comparison"]["changes"] = data["comparison"]["changes"][1:]
         self.widget._render(data)
-        self.assertIn("暂无该股票的判断变化", self.widget.details.toPlainText())
+        self.assertIn("暂无该股票的判断变化", self.widget.thesis.toPlainText())
+
+    def test_overview_prioritizes_judgment_and_keeps_financial_detail_in_its_tab(self):
+        self.widget._render(nested_result())
+        self.assertIn("<b>untrusted</b>", self.widget.details.toPlainText())
+        self.assertNotIn("资本开支", self.widget.details.toPlainText())
+        self.assertIn("资本开支", self.widget.financials.toPlainText())
+        self.assertTrue(self.widget.information.content.isHidden())
+        self.widget.information.button.click()
+        self.assertFalse(self.widget.information.content.isHidden())
+        self.assertIn("本月预算未填写", self.widget.plan_summary.text())
+        self.assertEqual(self.service.calls, 0)
+
+    def test_filter_clears_old_detail_and_restores_selection_without_fetch(self):
+        data = result()
+        other = copy.deepcopy(data["assessments"][0])
+        other.update(symbol="NVDA", name="英伟达", decision="NORMAL", decision_label="可按正常节奏投入")
+        data["assessments"].append(other)
+        self.widget._render(data)
+        self.widget.search.setText("英伟达")
+        self.assertEqual(self.widget._selected()["symbol"], "NVDA")
+        self.assertIn("NVDA", self.widget.stock_title.text())
+        self.widget.search.setText("not-present")
+        self.assertIsNone(self.widget._selected())
+        self.assertFalse(self.widget.contribution_button.isEnabled())
+        self.assertEqual(self.widget.stock_metrics["price"].text(), "—")
+        self.widget.search.clear()
+        self.widget.filter.setCurrentIndex(1)
+        self.assertEqual(self.widget._selected()["symbol"], "NVDA")
+        self.assertEqual(self.service.calls, 0)
+
+    def test_stale_snapshot_does_not_show_current_amount_in_hero_or_summary(self):
+        data = result()
+        data.update(expired=True, actionable=False)
+        data["plan_status"].update(ready=True, proposed_usd=400)
+        data["assessments"][0]["budget"]["amount_usd"] = 400
+        self.widget._render(data)
+        self.assertEqual(self.widget.stock_metrics["budget"].text(), "待更新")
+        self.assertEqual(self.widget.proposed_card.value.text(), "待更新")
+        self.assertIn("仅供复盘", self.widget.selection_warning.text())
+        self.assertEqual(self.widget.decision_badge.text(), "需要更新")
 
     def test_source_cards_show_real_documents_titles_dates_and_fetch_status(self):
         self.widget._render(nested_result())

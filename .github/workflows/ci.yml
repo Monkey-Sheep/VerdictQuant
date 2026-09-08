@@ -39,4 +39,7 @@ jobs:
           tests/unit/test_installment_metrics.py
           tests/unit/test_installment_gui.py
           tests/unit/test_manual_monitor.py
+          tests/unit/test_market_overview.py
+          tests/unit/test_investment_plan_layout.py
+          tests/unit/test_workbench_navigation.py
           -q
