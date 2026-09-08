@@ -28,12 +28,12 @@ def render(result: dict | None) -> str:
     if fund:
         ma = fund["ma"]
         weak = fund.get("qualified") and ma["20"] is not None and ma["50"] is not None and fund["close"] < min(ma["20"], ma["50"])
-        posture = "短期偏弱，暂停新增并复核" if weak else "趋势数据待复核" if not fund.get("qualified") else "先看趋势与资料，再判断是否调整"
+        posture = "短期价格偏弱，仅作走势背景" if weak else "趋势数据待复核" if not fund.get("qualified") else "持仓保持观察；不以均线直接决定增减"
         parts += [f"<p><span style='font-size:26px'><b>{display(fund['close'], digits=4)}</b></span>　正式净值日期：{escape(fund['date'])}</p>",
                   f"<p>{posture}　日变化 {display(fund.get('daily_pct'), True)}　五交易日 {display(fund.get('five_session_pct'), True)}</p>",
                   f"<p>20 / 50 / 200 日均线：{display(ma['20'])} / {display(ma['50'])} / {display(ma['200'])}</p>",
                   f"<p>距52周高点：{display(fund['drawdown_52week_pct'], True)}　200日均线斜率：{display(fund.get('ma200_twenty_session_slope_pct'), True)}</p>",
-                  "<p>申购时无法预知最终净值。成长广度与已执行动作未核实前，提前仓保持待评估。</p>"]
+                  "<p>当前安排为保留已有基金持仓。这里只显示公开行情，不生成自动申购、赎回或减仓指令。</p>"]
     else:
         parts.append("<p>基金数据获取失败，未使用旧净值冒充本次结果。</p>")
     parts.append("<h2>美股 · 核心与观察池</h2>")
@@ -49,13 +49,11 @@ def render(result: dict | None) -> str:
         if check.get("status") == "PRICE_GATE_REACHED":
             state = "触及价格复核线，需人工结合其他证据"
         elif check.get("status") == "PRICE_GATE_NOT_REACHED":
-            state = "未触及既定减仓价格门槛"
-        if symbol in {"SNDK", "SKHY"}:
-            state += "；零持仓观察"
+            state = "未触及价格复核线；核心持仓仅观察"
         quote = asset.get("quote") or {}
         live = display(quote.get("price")) if quote.get("fresh") else "—"
         parts.append(f"<tr><td><b>{symbol}</b></td><td>{escape(asset['date'])}</td><td align='right'>{display(asset['close'])}</td><td align='right'>{display(asset.get('daily_pct'), True)}</td><td align='right'>{display(asset.get('five_session_pct'), True)}</td><td align='right'>{live}</td><td>{state}</td></tr>")
-    parts.append("</table><p>新报价仅在来源时间足够新时显示，不计入未完成日线。门槛仅进入人工复核，不等于减仓指令。BTC仅作COIN背景。</p>")
+    parts.append("</table><p>新报价仅在来源时间足够新时显示，不计入未完成日线。价格复核线不等于减仓指令；股票投入研究请切换“分批投资研究”。BTC仅作COIN背景。</p>")
     for symbol in result["core_checks"]:
         asset = assets.get(symbol)
         if asset:

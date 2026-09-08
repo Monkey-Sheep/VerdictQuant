@@ -198,5 +198,5 @@ def core_review_checks(data: dict, policy: dict) -> dict:
                            "two_closes_below_ma200": below, "drawdown_gate_reached": drawdown,
                            "manual_review_required": True if below else None if drawdown else False,
                            "corroboration_required": bool(drawdown and not below),
-                           "first_trim_max_shares": rule["first_trim_max_shares"], "order_authorized": False}
+                           "first_trim_max_shares": None, "order_authorized": False}
     return results

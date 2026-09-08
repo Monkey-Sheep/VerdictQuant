@@ -22,3 +22,21 @@ jobs:
 
       - name: Verify install
         run: python -c "import pa_agent; print('OK')"
+
+      - name: Verify installment research and manual monitoring
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+        run: >-
+          python -m pytest
+          tests/unit/test_installment_sources.py
+          tests/unit/test_installment_documents.py
+          tests/unit/test_installment_issuer_news.py
+          tests/unit/test_installment_decision.py
+          tests/unit/test_installment_service.py
+          tests/unit/test_installment_ai.py
+          tests/unit/test_installment_codex.py
+          tests/unit/test_installment_metrics.py
+          tests/unit/test_installment_gui.py
+          tests/unit/test_manual_monitor.py
+          -q
