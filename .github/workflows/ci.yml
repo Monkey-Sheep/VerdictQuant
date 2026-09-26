@@ -42,4 +42,6 @@ jobs:
           tests/unit/test_market_overview.py
           tests/unit/test_investment_plan_layout.py
           tests/unit/test_workbench_navigation.py
+          tests/unit/test_workbench_freshness.py
+          tests/unit/test_snapshot_recovery.py
           -q

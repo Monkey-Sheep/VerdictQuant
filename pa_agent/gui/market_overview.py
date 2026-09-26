@@ -26,7 +26,8 @@ NAMES = {"001437": "易方达瑞享混合 I", "VOO": "标普 500 ETF", "QQQM": "
 ERRORS = {"STALE_COMPLETED_HISTORY": "最近完成交易日数据缺失", "INSUFFICIENT_HISTORY": "历史样本不足",
           "INSUFFICIENT_NAV_HISTORY": "净值历史样本不足", "PUBLIC_NAV_HISTORY_CACHE_MISSING": "净值历史缓存缺失",
           "PENDING_PUBLICATION": "最新交易日的正式净值尚待披露", "STALE": "正式净值尚未更新",
-          "SAVED_DATA_NEEDS_REFRESH": "保存数据需要手动刷新", "EMPTY_OR_DUPLICATE_DATES": "来源日期缺失或重复",
+          "SAVED_DATA_NEEDS_REFRESH": "保存数据需要手动刷新", "SAVED_DATA_UNREADABLE": "本地保存结果暂时无法校验",
+          "EMPTY_OR_DUPLICATE_DATES": "来源日期缺失或重复",
           "HIGH_BELOW_CLOSE": "最高价与收盘价口径不一致", "INVALID_PRICE": "来源价格无效",
           "PUBLIC_SYMBOL_MISMATCH": "股票身份尚未核验", "OFFICIAL_NAV_UNAVAILABLE": "正式净值未取得",
           "UNCOMPLETED_OFFICIAL_NAV_DATE": "来源净值日期尚未完成"}

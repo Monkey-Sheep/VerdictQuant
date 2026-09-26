@@ -1,6 +1,7 @@
 """Manual, cache-first installment research. No brokerage or execution actions."""
 from __future__ import annotations
 
+import copy
 import html
 import math
 import re
@@ -338,6 +339,7 @@ class InstallmentResearchWidget(QWidget):
         self._contributions = []
         self._plan_dirty = False
         self._expired = False
+        self._cache_read_error = False
         self._chart_price = {}
         self.setObjectName("installmentResearch")
         apply_workbench_style(self)
@@ -616,7 +618,15 @@ class InstallmentResearchWidget(QWidget):
             self._render(self._latest_result)
             self._load_history()
         except Exception:
+            self._latest_result = None
+            self._render(None)
             self.status.setText("保存结果暂时无法读取；请手动更新，原记录仍保留。")
+        # Revalidate only local evidence. The network/model refresh remains an
+        # explicit user action, including after sleep or a new trading session.
+        self._freshness_timer = QTimer(self)
+        self._freshness_timer.setInterval(60_000)
+        self._freshness_timer.timeout.connect(self._recheck_saved_data)
+        self._freshness_timer.start()
         app = QApplication.instance()
         if app:
             app.aboutToQuit.connect(self.shutdown)
@@ -630,6 +640,27 @@ class InstallmentResearchWidget(QWidget):
         browser.document().setDocumentMargin(8)
         browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         return browser
+
+    def _recheck_saved_data(self):
+        if self._future is not None or self._historical:
+            return
+        previous = self._result
+        try:
+            latest = self.service.latest()
+            if latest != self._result:
+                self._render(latest)
+            self._latest_result = latest
+            if self._cache_read_error:
+                self.status.setText("本地保存结果已恢复读取；未联网、未调用模型。")
+            self._cache_read_error = False
+        except Exception:
+            stale = copy.deepcopy(previous)
+            if stale:
+                stale.update(expired=True, actionable=False,
+                             expiry_reasons=["本地保存结果暂时无法校验"])
+            self._render(stale)
+            self.status.setText("保存结果暂时无法校验；当前金额暂不使用，原记录仍保留。")
+            self._cache_read_error = True
 
     def _open_source(self, value):
         url = _https_url(value.toString())
@@ -676,6 +707,18 @@ class InstallmentResearchWidget(QWidget):
                                else "该快照未提供实际模型用量；不估算剩余额度或费用。")
 
     def _render(self, result, historical=False):
+        previous, previous_historical = self._result, self._historical
+        blocked = self.table.blockSignals(True)
+        try:
+            self._render_content(result, historical)
+        except Exception:
+            # A failed render must not leave a partly trusted snapshot behind.
+            self._render_content(previous, previous_historical)
+            raise
+        finally:
+            self.table.blockSignals(blocked)
+
+    def _render_content(self, result, historical=False):
         previous_symbol = (self._selected() or {}).get("symbol")
         self._result = result if isinstance(result, dict) else None
         self._historical = historical
@@ -722,16 +765,18 @@ class InstallmentResearchWidget(QWidget):
         plan_status = result.get("plan_status") or {}
         if not isinstance(plan_status, dict):
             plan_status = {}
+        stale = not historical and (self._plan_dirty or self._expired or engine_stale)
+        proposed_summary = "待更新" if stale else f"{_money(plan_status.get('proposed_usd'))} USD"
+        remaining_summary = "待更新" if stale else f"{_money(plan_status.get('remaining_unallocated_usd'))} USD"
         self.plan_summary.setText(f"计划月份：{plan_status.get('month') or '待确认'}  |  "
             f"本月预算：{_money(plan_status.get('budget_usd'))} USD  |  "
             f"已确认投入：{_money(plan_status.get('confirmed_spent_usd'))} USD  |  "
-            f"本次建议合计：{_money(plan_status.get('proposed_usd'))} USD  |  "
-            f"尚未分配：{_money(plan_status.get('remaining_unallocated_usd'))} USD。 "
+            f"本次建议合计：{proposed_summary}  |  "
+            f"尚未分配：{remaining_summary}。 "
             + ("计划信息已齐备。" if plan_status.get("ready") else "计划缺口：" + "；".join(str(v) for v in plan_status.get("gaps", [])))
             + str(plan_status.get("note") or ""))
         assessments = result.get("assessments") or []
         eligible = sum(item.get("decision") in {"START", "NORMAL", "INCREASE"} for item in assessments)
-        stale = not historical and (self._plan_dirty or self._expired or engine_stale)
         self.condition_card.update_value("待更新" if stale else f"{eligible} / {len(assessments)}", "公司层判断 · 金额受计划约束", "brand")
         self.monthly_card.update_value(_money(plan_status.get("budget_usd")), f"{plan_status.get('month') or current_period()} · USD")
         self.spent_card.update_value(_money(plan_status.get("confirmed_spent_usd")), "已确认的本机投入记录 · USD")
@@ -742,7 +787,7 @@ class InstallmentResearchWidget(QWidget):
         self.plan_notice_text.setToolTip("；".join(str(value) for value in plan_status.get("gaps") or []))
         self.watch_count.setText(f"{len(assessments)} 只")
         short_labels = {"START": "小额开始", "NORMAL": "正常投入", "INCREASE": "更有吸引力", "PAUSE": "暂缓新增", "REVIEW": "待核验"}
-        self.table.blockSignals(True)
+        blocked = self.table.blockSignals(True)
         try:
             self.table.setRowCount(len(assessments))
             for row, item in enumerate(assessments):
@@ -753,7 +798,9 @@ class InstallmentResearchWidget(QWidget):
                           if stale else _money(budget.get("amount_usd"))]
                 for col, value in enumerate(values):
                     cell = QTableWidgetItem(str(value))
-                    cell.setToolTip(str(item.get("decision_label") or "") if col == 1 else str(budget.get("reason") or "") if col == 3 else str(value))
+                    cell.setToolTip(str(item.get("decision_label") or "") if col == 1
+                                    else "当前金额暂不使用，请更新研究或重读本机计划。" if col == 3 and stale
+                                    else str(budget.get("reason") or "") if col == 3 else str(value))
                     if col == 1:
                         color = "#657187" if stale else {"START": "#16724c", "NORMAL": "#16724c", "INCREASE": "#2446d7", "PAUSE": "#9d6a1a"}.get(item.get("decision"), "#657187")
                         cell.setForeground(QColor(color))
@@ -761,7 +808,7 @@ class InstallmentResearchWidget(QWidget):
                         cell.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     self.table.setItem(row, col, cell)
         finally:
-            self.table.blockSignals(False)
+            self.table.blockSignals(blocked)
         if assessments:
             selected_row = next((n for n, item in enumerate(assessments) if item.get("symbol") == previous_symbol), 0)
             self.table.selectRow(selected_row)
@@ -769,6 +816,7 @@ class InstallmentResearchWidget(QWidget):
         else:
             self._clear_selection()
         self._filter_rows()
+        self._show_selection()
 
     def _filter_rows(self, *_):
         query = self.search.text().strip().casefold()
@@ -851,7 +899,9 @@ class InstallmentResearchWidget(QWidget):
         self.stock_metrics["drawdown"].setText(_percent(price.get("drawdown_pct")))
         amount = "待更新" if stale else _money(budget.get("amount_usd"))
         self.stock_metrics["budget"].setText(amount)
-        self.stock_metrics["budget"].setToolTip(str(budget.get("reason") or ""))
+        budget_reason = "当前金额暂不使用，请更新研究或重读本机计划。" if stale else str(budget.get("reason") or "")
+        self.stock_metrics["budget"].setToolTip(budget_reason)
+        budget_heading = "待更新" if stale else f"{_money(budget.get('amount_usd'))} USD · {_text(budget.get('label'))}"
         self.details.setHtml(document_html(warning_html
             + f"<h3>本期判断 · {_text(item.get('decision_label'))}</h3>"
             + f"<p>{_text(item.get('summary'))}</p>"
@@ -859,9 +909,9 @@ class InstallmentResearchWidget(QWidget):
         self.thesis.setHtml(document_html(warning_html
             + f"<h2>判断依据</h2><p>{_text(item.get('summary'))}</p>{_items(item.get('reasons'))}"
             + f"<h3>需要承担的风险</h3>{_items(item.get('risks'))}"
-            + f"<h3>本期投入安排</h3><p><b>{_money(budget.get('amount_usd'))} USD · {_text(budget.get('label'))}</b></p>"
-            + f"<p>{_text(budget.get('reason'))}</p>"
-            + f"<p>本期已确认投入：{_money(budget.get('spent_this_month_usd'))} USD。{_text(budget.get('note'))}</p>"
+            + f"<h3>本期投入安排</h3><p><b>{budget_heading}</b></p>"
+            + f"<p>{_text(budget_reason)}</p>"
+            + f"<p>本期已确认投入：{_money(budget.get('spent_this_month_usd'))} USD。{'' if stale else _text(budget.get('note'))}</p>"
             + _overlap_html(item.get("symbol"))
             + f"<h3>何时复核</h3><p>{_text(item.get('next_review'))}</p>"
             + f"<p>结果有效至：{_text(format_time((self._result or {}).get('valid_until')))}（北京时间）</p>"
@@ -1149,6 +1199,7 @@ class InstallmentResearchWidget(QWidget):
     def shutdown(self):
         self._cancelled.set()
         self._poll.stop()
+        self._freshness_timer.stop()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None

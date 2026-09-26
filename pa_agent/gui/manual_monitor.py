@@ -1,6 +1,7 @@
 """Open cached monitoring immediately; refresh only on an explicit button click."""
 from __future__ import annotations
 
+import copy
 import threading
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 
@@ -16,10 +17,12 @@ from pa_agent.gui.workbench_ui import apply_workbench_style, icon, label, toolba
 class ManualMonitorWidget(QWidget):
     def __init__(self, parent=None, service=None, research_service=None):
         super().__init__(parent)
-        self.service = service or MonitoringService()
+        self.service = service
         self._executor = None
         self._future = None
         self._cancelled = threading.Event()
+        self._market_result = None
+        self._cache_read_error = False
         self.setObjectName("investmentWorkbench")
         self.setWindowTitle("VerdictQuant · 投资工作台")
         self.setMinimumSize(1060, 660)
@@ -112,10 +115,18 @@ class ManualMonitorWidget(QWidget):
         self._poll.setInterval(100)
         self._poll.timeout.connect(self._finish_refresh)
         try:
-            self.browser.set_result(self.service.latest())
-        except (OSError, ValueError, KeyError, TypeError):
+            self._ensure_service()
+            self._market_result = self.service.latest()
+            self.browser.set_result(self._market_result)
+        except Exception:
+            self._market_result = None
             self.browser.set_result(None)
-            self.status.setText("保存结果无法校验，请手动刷新；旧文件已保留。")
+            self._cache_read_error = True
+            self.status.setText("监控配置或保存结果无法校验，原文件已保留。请检查本机 paths.json 与保存结果后重试。")
+        self._freshness_timer = QTimer(self)
+        self._freshness_timer.setInterval(60_000)
+        self._freshness_timer.timeout.connect(self._recheck_saved_data)
+        self._freshness_timer.start()
         if app is not None:
             app.aboutToQuit.connect(self.shutdown)
 
@@ -128,12 +139,47 @@ class ManualMonitorWidget(QWidget):
         self.open_plan_button.setEnabled(not busy)
         self.open_model_button.setEnabled(not busy)
 
+    def _ensure_service(self):
+        if self.service is None:
+            self.service = MonitoringService()
+
+    def _recheck_saved_data(self):
+        if self._future is not None:
+            return
+        try:
+            self._ensure_service()
+            result = self.service.latest()
+            if result != self._market_result:
+                self.browser.set_result(result)
+                self._market_result = result
+            if self._cache_read_error:
+                self.status.setText("本地保存结果已恢复读取；未联网刷新行情。")
+            self._cache_read_error = False
+        except Exception:
+            stale = copy.deepcopy(self._market_result)
+            if stale:
+                for symbol, asset in stale["data"]["assets"].items():
+                    asset["qualified"] = False
+                    asset["errors"] = list(dict.fromkeys([*asset.get("errors", []), "SAVED_DATA_UNREADABLE"]))
+                    stale["data"]["errors"][symbol] = asset["errors"]
+                    if asset.get("quote"):
+                        asset["quote"]["fresh"] = False
+            self.browser.set_result(stale)
+            self._market_result = stale
+            self.status.setText("保存结果暂时无法校验；显示的旧行情仅供回看，原文件已保留。")
+            self._cache_read_error = True
+
     def _open_source(self, url: QUrl):
         if url.scheme() == "https":
             QDesktopServices.openUrl(url)
 
     def refresh_data(self):
         if self._future is not None:
+            return
+        try:
+            self._ensure_service()
+        except (OSError, ValueError, KeyError, TypeError):
+            self.status.setText("本地监控配置无法校验，请检查 paths.json 后重试；未联网、原文件已保留。")
             return
         self._cancelled.clear()
         if self._executor is None:
@@ -151,6 +197,8 @@ class ManualMonitorWidget(QWidget):
         try:
             result = self._future.result()
             self.browser.set_result(result)
+            self._market_result = result
+            self._cache_read_error = False
             self.status.setText("公开数据已刷新；研究缺口已单独列出。" if not result["data"]["errors"] else "刷新完成，部分数据未通过校验；缺口已列出。")
         except RefreshBusy:
             self.status.setText("另一个窗口正在刷新，稍后再试；当前结果已保留。")
@@ -166,6 +214,7 @@ class ManualMonitorWidget(QWidget):
     def shutdown(self):
         self._cancelled.set()
         self._poll.stop()
+        self._freshness_timer.stop()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
         if hasattr(self, "installment"):
