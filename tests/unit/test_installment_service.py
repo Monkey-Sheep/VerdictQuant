@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 import threading
@@ -11,8 +12,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from pa_agent.installment.ai import AnalysisError, evidence_fingerprint, public_packet
-from pa_agent.installment.models import SYMBOLS, default_plan
+from pa_agent.installment.ai import AnalysisError, evidence_fingerprint
+from pa_agent.installment.models import default_plan
 from pa_agent.installment.service import InstallmentService
 from pa_agent.monitoring.service import RefreshBusy
 
@@ -125,6 +126,52 @@ class InstallmentServiceTests(unittest.TestCase):
         path.write_text(path.read_text(encoding="utf-8").replace("经营仍成立", "篡改内容"), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "HASH_MISMATCH"):
             self.service.latest()
+
+    def test_malformed_local_records_fail_with_value_error(self):
+        self.root.mkdir()
+        for name, read in (("engine.json", self.service.load_engine),
+                           ("contributions.json", self.service.contributions)):
+            path = self.root / name
+            with self.subTest(name=name):
+                path.write_text("[]", encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    read()
+                path.unlink()
+        path = self.root / "contributions.json"
+        path.write_text('{"schema_version":1,"events":[[]]}', encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.service.contributions()
+
+    def test_checksum_consistent_invalid_research_snapshot_is_rejected(self):
+        result = self.service.refresh()
+        path = self.root / "runs" / result["run_id"] / "bundle.json"
+        for bundle in ([], {**result, "assessments": [None]},
+                       {**result, "assessments": [{"symbol": "NVDA", "price": {}}]},
+                       {**result, "public_evidence": []},
+                       {**result, "provider": [1]},
+                       {**result, "account_connections": True}):
+            with self.subTest(bundle=bundle):
+                raw = json.dumps(bundle).encode("utf-8")
+                path.write_bytes(raw)
+                (self.root / "current.json").write_text(json.dumps({"run_id": result["run_id"],
+                                                                       "sha256": hashlib.sha256(raw).hexdigest()}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    self.service.latest()
+
+    def test_invalid_research_pointer_is_rejected(self):
+        self.root.mkdir()
+        (self.root / "current.json").write_text("[]", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.service.latest()
+
+    def test_invalid_cached_judgment_falls_back_to_fresh_analysis(self):
+        self.service.refresh()
+        cache_path = next((self.root / "judgment-cache").iterdir())
+        cache_path.write_text("[]", encoding="utf-8")
+        (self.root / "current.json").write_text("[]", encoding="utf-8")
+        second = self.service.refresh()
+        self.assertEqual(self.analyst.calls, 2)
+        self.assertEqual(second["assessments"][0]["decision"], "NORMAL")
 
     def test_path_traversal_rejected(self):
         with self.assertRaises(ValueError): self.service.load_run("../../outside")

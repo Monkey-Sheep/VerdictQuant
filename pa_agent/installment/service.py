@@ -59,6 +59,8 @@ class InstallmentService:
     def load_engine(self):
         path = self.root / "engine.json"
         value = _read_json(path, 10000) if path.is_file() else {"kind": "codex_cli", "model": "gpt-5.3-codex-spark", "reasoning_effort": "high"}
+        if not isinstance(value, dict):
+            raise ValueError("研究引擎配置无效。")
         if value.get("kind") == "api":
             return {"kind": "api"}
         if value.get("kind") != "codex_cli" or not re.fullmatch(r"gpt-[a-zA-Z0-9._-]{1,70}", str(value.get("model"))) or value.get("reasoning_effort") not in {"low", "medium", "high", "xhigh"}:
@@ -111,13 +113,16 @@ class InstallmentService:
         if not path.is_file():
             return []
         payload = _read_json(path, 2_000_000)
-        if payload.get("schema_version") != 1 or not isinstance(payload.get("events"), list):
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1 or not isinstance(payload.get("events"), list):
             raise ValueError("CONTRIBUTION_RECORD_INVALID")
         seen = set()
         for row in payload["events"]:
-            if row.get("event_id") in seen or not isinstance(row.get("event_id"), str) or row.get("symbol") not in SYMBOLS:
+            if not isinstance(row, dict):
                 raise ValueError("CONTRIBUTION_RECORD_INVALID")
-            seen.add(row["event_id"])
+            identifier = row.get("event_id")
+            if not isinstance(identifier, str) or identifier in seen or row.get("symbol") not in SYMBOLS:
+                raise ValueError("CONTRIBUTION_RECORD_INVALID")
+            seen.add(identifier)
             finite(row.get("amount_usd"), minimum=.01, maximum=1_000_000_000)
             if not re.fullmatch(r"20\d\d-(0[1-9]|1[0-2])", str(row.get("period"))):
                 raise ValueError("CONTRIBUTION_RECORD_INVALID")
@@ -153,7 +158,20 @@ class InstallmentService:
         if not path.is_relative_to(self.root / "runs"):
             raise ValueError("RESEARCH_PATH_INVALID")
         value = _read_json(path)
-        if value.get("schema_version") != SCHEMA or value.get("run_id") != run_id or value.get("orders") is not False or value.get("manual_only") is not True:
+        if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA or value.get("run_id") != run_id
+                or value.get("orders") is not False or value.get("manual_only") is not True
+                or value.get("account_connections") is not False
+                or not isinstance(value.get("provider"), dict)
+                or not isinstance(value.get("assessments"), list) or not value["assessments"]
+                or not isinstance(value.get("public_evidence"), dict)
+                or any(not isinstance(row, dict) for row in value["public_evidence"].values())
+                or any(not isinstance(item, dict) or item.get("symbol") not in SYMBOLS
+                       or not isinstance(item.get("decision"), str)
+                       or item["decision"] not in {"START", "NORMAL", "INCREASE", "PAUSE", "REVIEW"}
+                       or not isinstance(item.get("price"), dict) or not isinstance(item.get("valuation"), dict)
+                       or not isinstance(item["valuation"].get("metrics"), dict)
+                       or not isinstance(item.get("budget"), dict) or not isinstance(item.get("sources"), list)
+                       for item in value["assessments"])):
             raise ValueError("RESEARCH_SNAPSHOT_INVALID")
         return value, path
 
@@ -185,6 +203,9 @@ class InstallmentService:
         if not pointer.is_file():
             return None
         ref = _read_json(pointer, 4096)
+        if (not isinstance(ref, dict) or not isinstance(ref.get("run_id"), str)
+                or not isinstance(ref.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", ref["sha256"])):
+            raise ValueError("RESEARCH_POINTER_INVALID")
         result, path = self._read_run(ref["run_id"])
         if hashlib.sha256(path.read_bytes()).hexdigest() != ref["sha256"]:
             raise ValueError("RESEARCH_SNAPSHOT_HASH_MISMATCH")
@@ -328,7 +349,9 @@ class InstallmentService:
                     if cache_path.is_file():
                         try:
                             cached = _read_json(cache_path)
-                            if cached.get("fingerprint") == digest:
+                            if (isinstance(cached, dict) and cached.get("fingerprint") == digest
+                                    and isinstance(cached.get("judgment"), dict)
+                                    and isinstance(cached.get("created_at"), str)):
                                 candidate, made_at = cached["judgment"], cached["created_at"]
                         except (OSError, ValueError, KeyError, TypeError):
                             pass

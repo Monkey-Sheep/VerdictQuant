@@ -595,7 +595,7 @@ class InstallmentQtTests(unittest.TestCase):
             service.save_plan(plan)
             run_id = now.strftime("%Y%m%dT%H%M%SZ") + "-012345abcdef"
             data = result(run_id)
-            data.update(schema_version=1, manual_only=True, orders=False,
+            data.update(schema_version=1, manual_only=True, orders=False, account_connections=False, public_evidence={},
                         decision_policy_version=DECISION_VERSION, engine=service.load_engine())
             data["assessments"][0].update(decision="NORMAL", confidence="high")
             data["assessments"][0]["price"]["rows"] = []
