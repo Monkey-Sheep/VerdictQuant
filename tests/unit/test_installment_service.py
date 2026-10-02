@@ -104,6 +104,20 @@ class InstallmentServiceTests(unittest.TestCase):
             self.assertNotIn(private, sent)
         self.assertNotIn("api_key", sent)
 
+    def test_assistant_context_contains_public_evidence_and_freshness_without_private_plan(self):
+        plan = default_plan(NOW)
+        plan.update(monthly_budget_usd=1234.5678, portfolio_total_usd=43210.9876, horizon_years=5)
+        plan["positions_usd"] = {s: 0 for s in plan["positions_usd"]}
+        self.service.save_plan(plan)
+        self.service.refresh()
+        self.now += timedelta(days=3)
+        context = self.service.public_chat_context()
+        self.assertTrue(context["expired"])
+        self.assertEqual(context["packets"][0]["symbol"], "NVDA")
+        sent = json.dumps(context)
+        for private in ("1234.5678", "43210.9876", "positions_usd", "target_weights", "contributions", "budget", "plan_hash"):
+            self.assertNotIn(private, sent)
+
     def test_expiry_changes_view_not_immutable_snapshot(self):
         first = self.service.refresh()
         path = self.root / "runs" / first["run_id"] / "bundle.json"
@@ -189,6 +203,19 @@ class InstallmentServiceTests(unittest.TestCase):
         pointer = (self.root / "current.json").read_bytes()
         with patch.object(self.market, "equity", side_effect=ValueError("bad public data")):
             with self.assertRaises(AnalysisError): self.service.refresh()
+        self.assertEqual((self.root / "current.json").read_bytes(), pointer)
+
+    def test_chatgpt_failure_and_invalid_output_preserve_previous_pointer(self):
+        self.service.refresh()
+        pointer = (self.root / "current.json").read_bytes()
+        self.now += timedelta(days=3)
+        with patch.object(self.analyst, "analyze", side_effect=AnalysisError("模型流未完整结束")):
+            with self.assertRaisesRegex(AnalysisError, "未完整"):
+                self.service.refresh()
+        self.assertEqual((self.root / "current.json").read_bytes(), pointer)
+        with patch.object(self.analyst, "analyze", return_value={"invalid": True}):
+            with self.assertRaisesRegex(AnalysisError, "保留"):
+                self.service.refresh()
         self.assertEqual((self.root / "current.json").read_bytes(), pointer)
 
     def test_refresh_lock_is_cross_instance(self):
