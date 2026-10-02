@@ -25,7 +25,8 @@ from pa_agent.gui.workbench_ui import (
     format_time, label, set_tone, toolbar_button,
 )
 
-DEFAULT_ENGINE = {"kind": "codex_cli", "model": "gpt-5.3-codex-spark", "reasoning_effort": "high"}
+DEFAULT_ENGINE = {"kind": "chatgpt_plan", "model": "", "reasoning_effort": "", "profile_id": ""}
+REASONING_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
 def _text(value, fallback="待核实"):
@@ -232,7 +233,7 @@ def _sources_html(sources, evidence):
 class EngineSettingsDialog(QDialog):
     """Feature-local routing only. API credentials remain in their existing settings."""
 
-    def __init__(self, config, parent=None):
+    def __init__(self, config, parent=None, client=None):
         super().__init__(parent)
         apply_workbench_style(self)
         self.setWindowTitle("分批投资研究 · 模型设置")
@@ -243,20 +244,41 @@ class EngineSettingsDialog(QDialog):
         root.addWidget(_plain_label("只配置本功能使用的引擎，保存不会联网或调用模型。"))
         form = QFormLayout()
         self.kind = QComboBox()
-        self.kind.addItem("本机 Codex（订阅额度）", "codex_cli")
+        self.kind.addItem("ChatGPT 登录（订阅额度）", "chatgpt_plan")
         self.kind.addItem("已有 API 配置（单独计费）", "api")
         form.addRow("分析引擎", self.kind)
-        self.codex_fields = QWidget()
-        codex_form = QFormLayout(self.codex_fields)
-        codex_form.setContentsMargins(0, 0, 0, 0)
-        self.model = QLineEdit(str(config.get("model") or DEFAULT_ENGINE["model"]) if config.get("kind", "codex_cli") == "codex_cli" else DEFAULT_ENGINE["model"])
+        self.chatgpt_fields = QWidget()
+        chatgpt_form = QFormLayout(self.chatgpt_fields)
+        chatgpt_form.setContentsMargins(0, 0, 0, 0)
+        self.models = []
+        self.profile_id = ""
+        self.account_label = "未登录"
+        try:
+            if client is None:
+                from pa_agent.chatgpt.client import ChatGPTClient
+                client = ChatGPTClient()
+            state = client.status()
+            self.models = state.get("models", [])
+            self.profile_id = state.get("profile_id") or ""
+            self.account_label = state.get("label") or "未登录"
+        except Exception:
+            pass
+        self.model = QComboBox()
+        self.model.addItem("先在 AI 助手中登录并刷新模型", "")
+        for row in self.models:
+            self.model.addItem(row.get("display_name") or row["slug"], row["slug"])
         self.reasoning = QComboBox()
-        self.reasoning.addItems(["low", "medium", "high", "xhigh"])
-        effort = config.get("reasoning_effort") if config.get("kind", "codex_cli") == "codex_cli" else "high"
-        self.reasoning.setCurrentText(effort if effort in {"low", "medium", "high", "xhigh"} else "high")
-        codex_form.addRow("Codex 模型", self.model)
-        codex_form.addRow("推理强度", self.reasoning)
-        form.addRow(self.codex_fields)
+        self.model.currentIndexChanged.connect(self._update_reasoning)
+        selected = self.model.findData(config.get("model", ""))
+        self.model.setCurrentIndex(max(0, selected))
+        self._update_reasoning()
+        prior = self.reasoning.findData(config.get("reasoning_effort", ""))
+        if prior >= 0:
+            self.reasoning.setCurrentIndex(prior)
+        chatgpt_form.addRow("当前账号", _plain_label(self.account_label))
+        chatgpt_form.addRow("账号可用模型", self.model)
+        chatgpt_form.addRow("推理强度", self.reasoning)
+        form.addRow(self.chatgpt_fields)
         root.addLayout(form)
         self.explanation = _plain_label()
         root.addWidget(self.explanation)
@@ -274,21 +296,30 @@ class EngineSettingsDialog(QDialog):
         self.kind.currentIndexChanged.connect(self._update_kind)
         self.kind.setCurrentIndex(1 if config.get("kind") == "api" else 0)
         self._update_kind()
+        if config.get("reasoning_effort") and self.reasoning.findData(config["reasoning_effort"]) < 0:
+            self.error.setText("当前账号目录未确认原推理档位；保存将使用模型默认或当前模型支持的档位。")
 
     def _update_kind(self, *_):
-        codex = self.kind.currentData() == "codex_cli"
-        self.codex_fields.setVisible(codex)
-        self.api_button.setVisible(not codex)
-        self.explanation.setText("使用本机官方 Codex 的现有 ChatGPT 订阅登录，消耗订阅额度。此设置不修改全局 Codex 配置；模型是否可用以实际调用结果为准。"
-                                 if codex else "沿用已有 API 提供商、模型及密钥，API 用量单独计费。保存此选择只切换路由，不覆盖已有 API 配置。")
+        chatgpt = self.kind.currentData() == "chatgpt_plan"
+        self.chatgpt_fields.setVisible(chatgpt)
+        self.api_button.setVisible(not chatgpt)
+        self.explanation.setText("在 AI 助手中完成本软件的 ChatGPT 登录与额度授权。这里只读取账号保存的模型列表，保存选择后手动更新才消耗订阅额度。"
+                                 if chatgpt else "沿用已有 API 提供商、模型及密钥，API 用量单独计费。保存此选择只切换路由，不覆盖已有 API 配置。")
+
+    def _update_reasoning(self, *_):
+        self.reasoning.clear()
+        model = next((row for row in self.models if row.get("slug") == self.model.currentData()), {})
+        efforts = [effort for effort in REASONING_ORDER if effort in model.get("reasoning_efforts", [])]
+        for effort in efforts:
+            self.reasoning.addItem(effort, effort)
+        if not efforts:
+            self.reasoning.addItem("模型默认", "")
+        self.reasoning.setCurrentIndex(self.reasoning.count() - 1)
 
     def collect_config(self):
         if self.kind.currentData() == "api":
             return {"kind": "api"}
-        model = self.model.text().strip()
-        if not re.fullmatch(r"gpt-[A-Za-z0-9._-]{1,70}", model):
-            raise ValueError("请填写有效的 Codex GPT 模型名称。")
-        return {"kind": "codex_cli", "model": model, "reasoning_effort": self.reasoning.currentText()}
+        return {"kind": "chatgpt_plan", "model": self.model.currentData() or "", "reasoning_effort": self.reasoning.currentData() or "", "profile_id": self.profile_id}
 
     def _accept_config(self):
         try:
@@ -669,21 +700,23 @@ class InstallmentResearchWidget(QWidget):
 
     def _update_engine_note(self):
         kind = self._engine.get("kind")
-        note = (f"本机 Codex · {self._engine.get('model') or DEFAULT_ENGINE['model']}：使用现有 ChatGPT 登录，消耗订阅额度。"
-                if kind == "codex_cli" else "已有 API 配置：用量由 API 提供商单独计费。" if kind == "api"
+        profile = self._engine.get("profile_id", "")
+        account = f"（关联账号 {profile[:8]}）" if profile else ""
+        note = (f"ChatGPT · {self._engine.get('model') or '请到 AI 助手登录并选择模型'}{account}：使用本软件授权，消耗订阅额度。"
+                if kind == "chatgpt_plan" else "已有 API 配置：用量由 API 提供商单独计费。" if kind == "api"
                 else "引擎配置未能读取，请在模型设置中核对。")
         self.engine_note.setText("打开只读已保存结果，点击更新才联网。" + note)
 
     def _billing_notice(self):
-        return "已发出的 Codex 请求可能已消耗订阅额度。" if self._engine.get("kind") == "codex_cli" else "已发出的 API 请求可能已计费。"
+        return "已发出的 ChatGPT 请求可能已消耗订阅额度。" if self._engine.get("kind") == "chatgpt_plan" else "已发出的 API 请求可能已计费。"
 
     def _engine_is_stale(self, result):
         prior = (result or {}).get("engine")
         if isinstance(prior, dict) and prior.get("kind"):
-            fields = ("kind", "model", "reasoning_effort") if self._engine.get("kind") == "codex_cli" else ("kind",)
+            fields = ("kind", "model", "reasoning_effort", "profile_id") if self._engine.get("kind") == "chatgpt_plan" else ("kind",)
             return self._engine_changed or any(prior.get(key) != self._engine.get(key) for key in fields)
         model = ((result or {}).get("provider") or {}).get("model")
-        if self._engine.get("kind") == "codex_cli" and model:
+        if self._engine.get("kind") == "chatgpt_plan" and model:
             return self._engine_changed or model != self._engine.get("model")
         return self._engine_changed
 
@@ -979,7 +1012,7 @@ class InstallmentResearchWidget(QWidget):
         self.cancel_button.show()
         self.progress_bar.show()
         self.refresh_state_changed.emit(True)
-        self.status.setText("正在更新公开数据与模型分析，仍可查看上次结果。" + ("本机 Codex 将消耗订阅额度。" if self._engine.get("kind") == "codex_cli" else "API 调用单独计费。"))
+        self.status.setText("正在更新公开数据与模型分析，仍可查看上次结果。" + ("ChatGPT 将消耗订阅额度。" if self._engine.get("kind") == "chatgpt_plan" else "API 调用单独计费。"))
         self._future = self._executor.submit(self.service.refresh, cancelled=self._cancelled, progress=self._progress)
         self._poll.start()
 
@@ -1114,6 +1147,20 @@ class InstallmentResearchWidget(QWidget):
         self._plan_dirty = True
         self._render(self._result, historical=self._historical)
         self.status.setText(text)
+
+    def public_chat_context(self):
+        item = self._selected()
+        return self.service.public_chat_context(item.get("symbol") if item else None)
+
+    def configure_chatgpt_model(self, model, reasoning_effort, profile_id):
+        if self._future is not None:
+            raise ValueError("股票研究正在更新，请完成或取消后再切换模型。")
+        current = self.service.load_engine()
+        self._engine = self.service.save_engine({"kind": "chatgpt_plan", "model": model, "reasoning_effort": reasoning_effort, "profile_id": profile_id})
+        self._engine_changed = self._engine_changed or self._engine != current
+        self._update_engine_note()
+        self._render(self._result, historical=self._historical)
+        self.status.setText("ChatGPT 模型已保存。旧研究需手动更新，本次未调用模型。")
 
     def edit_model(self):
         if self._future is not None:

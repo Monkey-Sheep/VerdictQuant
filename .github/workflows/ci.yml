@@ -36,6 +36,10 @@ jobs:
           tests/unit/test_installment_service.py
           tests/unit/test_installment_ai.py
           tests/unit/test_installment_codex.py
+          tests/unit/test_installment_chatgpt.py
+          tests/unit/test_chatgpt_auth.py
+          tests/unit/test_chatgpt_client.py
+          tests/unit/test_chatgpt_gui.py
           tests/unit/test_installment_metrics.py
           tests/unit/test_installment_gui.py
           tests/unit/test_manual_monitor.py

@@ -24,6 +24,30 @@ from .sources import PublicResearchClient
 RUN_ID = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{12}")
 SCHEMA = 1
 MAX_SNAPSHOT = 12_582_912
+DEFAULT_ENGINE = {"kind": "chatgpt_plan", "model": "", "reasoning_effort": "", "profile_id": ""}
+REASONING_EFFORTS = {"", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
+
+def validate_engine(value):
+    if not isinstance(value, dict):
+        raise ValueError("研究引擎配置无效。")
+    if value.get("kind") == "api":
+        return {"kind": "api"}
+    if value.get("kind") == "codex_cli":
+        # Old snapshots remain immutable. The new app asks for its own login
+        # instead of silently borrowing the local Codex session.
+        if not re.fullmatch(r"gpt-[a-zA-Z0-9._-]{1,70}", str(value.get("model"))) or not isinstance(value.get("reasoning_effort"), str) or value.get("reasoning_effort") not in {"low", "medium", "high", "xhigh"}:
+            raise ValueError("研究引擎配置无效。")
+        return dict(DEFAULT_ENGINE)
+    model, effort = value.get("model", ""), value.get("reasoning_effort", "")
+    profile_id = value.get("profile_id", "")
+    if (value.get("kind") != "chatgpt_plan" or not isinstance(model, str)
+            or (model and not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}", model))
+            or not isinstance(effort, str) or effort not in REASONING_EFFORTS
+            or not isinstance(profile_id, str) or (profile_id and not re.fullmatch(r"[0-9a-f]{32}", profile_id))
+            or (model and not profile_id)):
+        raise ValueError("研究引擎配置无效。")
+    return {"kind": "chatgpt_plan", "model": model, "reasoning_effort": effort, "profile_id": profile_id}
 
 
 def research_root():
@@ -58,27 +82,30 @@ class InstallmentService:
 
     def load_engine(self):
         path = self.root / "engine.json"
-        value = _read_json(path, 10000) if path.is_file() else {"kind": "codex_cli", "model": "gpt-5.3-codex-spark", "reasoning_effort": "high"}
-        if not isinstance(value, dict):
-            raise ValueError("研究引擎配置无效。")
-        if value.get("kind") == "api":
-            return {"kind": "api"}
-        if value.get("kind") != "codex_cli" or not re.fullmatch(r"gpt-[a-zA-Z0-9._-]{1,70}", str(value.get("model"))) or value.get("reasoning_effort") not in {"low", "medium", "high", "xhigh"}:
-            raise ValueError("研究引擎配置无效。")
-        return {k: value[k] for k in ("kind", "model", "reasoning_effort")}
+        value = _read_json(path, 10000) if path.is_file() else DEFAULT_ENGINE
+        return validate_engine(value)
 
     def save_engine(self, value):
-        if not isinstance(value, dict):
-            raise ValueError("研究引擎配置无效。")
-        if value.get("kind") == "api":
-            safe = {"kind": "api"}
-        elif value.get("kind") == "codex_cli" and re.fullmatch(r"gpt-[a-zA-Z0-9._-]{1,70}", str(value.get("model"))) and value.get("reasoning_effort") in {"low", "medium", "high", "xhigh"}:
-            safe = {k: value[k] for k in ("kind", "model", "reasoning_effort")}
-        else:
-            raise ValueError("研究引擎配置无效。")
+        safe = validate_engine(value)
         self.root.mkdir(parents=True, exist_ok=True)
         atomic_json(self.root / "engine.json", safe)
         return safe
+
+    def public_chat_context(self, symbol=None):
+        """Explicit, local read of public evidence only; never include a plan."""
+        snapshot = self.latest()
+        if not snapshot:
+            raise ValueError("尚无公开研究资料，请先手动更新股票研究。")
+        rows = snapshot["assessments"]
+        selected = next((row for row in rows if row["symbol"] == symbol), None) if symbol else rows[0]
+        if not selected:
+            raise ValueError("当前股票尚无保存的公开研究资料。")
+        evidence = snapshot["public_evidence"]
+        return {"generated_at": snapshot.get("generated_at"),
+                "expired": snapshot.get("expired", True),
+                "expiry_reasons": snapshot.get("expiry_reasons", []),
+                "selected_symbol": selected["symbol"],
+                "packets": [public_packet(selected["symbol"], selected["price"], evidence.get(selected["symbol"], {}))]}
 
     def load_plan(self):
         path = self.root / "plan.json"
@@ -322,9 +349,9 @@ class InstallmentService:
             try:
                 if self.analyst is not None:
                     analyst = self.analyst
-                elif engine["kind"] == "codex_cli":
-                    from .codex_provider import CodexResearch
-                    analyst = CodexResearch(engine["model"], engine["reasoning_effort"])
+                elif engine["kind"] == "chatgpt_plan":
+                    from .chatgpt_provider import ChatGPTResearch
+                    analyst = ChatGPTResearch(engine["model"], engine["reasoning_effort"], profile_id=engine["profile_id"])
                 else:
                     analyst = DeepSeekResearch()
                 # Injectable test analysts need no real credentials.
@@ -404,8 +431,12 @@ class InstallmentService:
             except CancelledError:
                 raise
             except AnalysisError as exc:
+                if engine["kind"] == "chatgpt_plan":
+                    raise
                 errors.append(str(exc))
             except Exception:
+                if engine["kind"] == "chatgpt_plan":
+                    raise AnalysisError("模型分析或缓存未通过校验，保留上次研究结果。") from None
                 errors.append("模型分析或缓存未通过校验，本次没有采用模型结论。")
             assessments = []
             for s in self.symbols:

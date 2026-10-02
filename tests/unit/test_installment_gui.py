@@ -360,9 +360,8 @@ class InstallmentQtTests(unittest.TestCase):
         with patch("pa_agent.config.settings.load_settings") as settings:
             dialog = EngineSettingsDialog({})
             self.assertEqual(dialog.collect_config(), DEFAULT_ENGINE)
-            dialog.model.setText("gpt-5.3-codex-spark")
-            dialog.reasoning.setCurrentText("xhigh")
-            self.assertEqual(dialog.collect_config()["reasoning_effort"], "xhigh")
+            self.assertEqual(dialog.model.currentData(), "")
+            self.assertEqual(dialog.reasoning.currentData(), "")
             dialog.kind.setCurrentIndex(1)
             self.assertEqual(dialog.collect_config(), {"kind": "api"})
             self.assertIn("单独计费", dialog.explanation.text())
@@ -388,18 +387,23 @@ class InstallmentQtTests(unittest.TestCase):
         self.assertIn("API", self.widget.engine_note.text())
         self.assertIn("单独计费", self.widget.engine_note.text())
 
-    def test_codex_model_save_is_feature_local_and_defers_invocation(self):
-        def choose_codex():
-            dialog = self.app.activeModalWidget()
-            dialog.reasoning.setCurrentText("medium")
-            dialog._accept_config()
-
-        QTimer.singleShot(0, choose_codex)
-        self.widget.edit_model()
-        self.assertEqual(self.service.saved_engines, [{"kind": "codex_cli", "model": "gpt-5.3-codex-spark", "reasoning_effort": "medium"}])
+    def test_chatgpt_model_save_is_feature_local_and_defers_invocation(self):
+        self.widget.configure_chatgpt_model("gpt-6.1-sol", "ultra", "a" * 32)
+        self.assertEqual(self.service.saved_engines, [{"kind": "chatgpt_plan", "model": "gpt-6.1-sol", "reasoning_effort": "ultra", "profile_id": "a" * 32}])
         self.assertEqual(self.service.calls, 0)
         self.assertIn("订阅额度", self.widget.engine_note.text())
         self.assertNotIn("API 调用", self.widget.engine_note.text())
+
+    def test_chatgpt_engine_dialog_uses_cached_catalog_and_highest_supported_effort(self):
+        client = Mock()
+        client.status.return_value = {"profile_id": "a" * 32, "models": [{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol",
+                                                 "reasoning_efforts": ["low", "high", "ultra"]}]}
+        dialog = EngineSettingsDialog({}, client=client)
+        dialog.model.setCurrentIndex(1)
+        self.assertEqual(dialog.collect_config(), {"kind": "chatgpt_plan", "model": "gpt-6.1-sol", "reasoning_effort": "ultra", "profile_id": "a" * 32})
+        client.list_models.assert_not_called()
+        client.chat.assert_not_called()
+        dialog.close()
 
     def test_usage_displays_only_reported_numbers_and_marks_reuse(self):
         data = result()

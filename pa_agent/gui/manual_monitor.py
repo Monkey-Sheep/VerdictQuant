@@ -10,12 +10,13 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QApplication, QButtonGroup, QFrame, QHBoxLayout, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 from pa_agent.monitoring.service import MonitoringService, RefreshBusy
+from pa_agent.gui.chatgpt_assistant import ChatGPTAssistantWidget
 from pa_agent.gui.market_overview import MarketOverviewWidget
 from pa_agent.gui.workbench_ui import apply_workbench_style, icon, label, toolbar_button
 
 
 class ManualMonitorWidget(QWidget):
-    def __init__(self, parent=None, service=None, research_service=None):
+    def __init__(self, parent=None, service=None, research_service=None, chatgpt_client=None):
         super().__init__(parent)
         self.service = service
         self._executor = None
@@ -57,7 +58,7 @@ class ManualMonitorWidget(QWidget):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         self.nav_buttons = []
-        for index, (caption, symbol) in enumerate((("股票研究", "research"), ("基金与行情", "market"))):
+        for index, (caption, symbol) in enumerate((("股票研究", "research"), ("基金与行情", "market"), ("AI 助手", "assistant"))):
             button = QPushButton(caption)
             button.setObjectName("sidebarButton")
             button.setIcon(icon(symbol))
@@ -104,6 +105,13 @@ class ManualMonitorWidget(QWidget):
         self.status.setContentsMargins(26, 0, 26, 0)
         market_layout.addWidget(self.status)
         self.tabs.addWidget(market_page)
+        self.chatgpt_assistant = ChatGPTAssistantWidget(
+            self, client=chatgpt_client,
+            context_provider=getattr(self.installment, "public_chat_context", None),
+            research_configurator=lambda model, effort: self.installment.configure_chatgpt_model(
+                model, effort, self.chatgpt_assistant.profile_id),
+        )
+        self.tabs.addWidget(self.chatgpt_assistant)
         layout.addWidget(self.tabs, 1)
         self.nav_group.idClicked.connect(self.tabs.setCurrentIndex)
         self.tabs.currentChanged.connect(self._sync_navigation)
@@ -133,7 +141,7 @@ class ManualMonitorWidget(QWidget):
     def _sync_navigation(self, index):
         for row, button in enumerate(self.nav_buttons):
             button.setChecked(row == index)
-            button.setIcon(icon("research" if row == 0 else "market", "#2446d7" if row == index else "#657187"))
+            button.setIcon(icon(("research", "market", "assistant")[row], "#2446d7" if row == index else "#657187"))
 
     def _research_busy(self, busy):
         self.open_plan_button.setEnabled(not busy)
@@ -219,6 +227,8 @@ class ManualMonitorWidget(QWidget):
             self._executor.shutdown(wait=False, cancel_futures=True)
         if hasattr(self, "installment"):
             self.installment.shutdown()
+        if hasattr(self, "chatgpt_assistant"):
+            self.chatgpt_assistant.shutdown()
 
     def closeEvent(self, event):
         self.shutdown()
