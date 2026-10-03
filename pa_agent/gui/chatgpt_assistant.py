@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from pa_agent.chatgpt.oauth import ChatGPTError
+from pa_agent.chatgpt.oauth import ChatGPTError, compatible_reasoning_efforts
 from pa_agent.gui.workbench_ui import label, toolbar_button
 
 
@@ -171,7 +171,7 @@ class ChatGPTAssistantWidget(QWidget):
             raw_efforts = item.get("reasoning_efforts")
             if not isinstance(slug, str) or not slug or slug in seen:
                 continue
-            efforts = list(dict.fromkeys(e for e in raw_efforts if isinstance(e, str) and e)) if isinstance(raw_efforts, list) else []
+            efforts = compatible_reasoning_efforts(raw_efforts)
             seen.add(slug)
             models.append({"slug": slug, "display_name": str(item.get("display_name") or slug),
                            "reasoning_efforts": efforts})

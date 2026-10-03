@@ -38,6 +38,16 @@ SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use
 SHARING_SCOPES = {"resource.invoke", "chatgpt.tokens.use.direct"}
 ALLOWED_URLS = {TOKEN_URL, DISCOVERY_URL, JWKS_URL, REVOKE_URL, MODELS_URL, RESPONSES_URL}
 MAX_BODY = 2 * 1024 * 1024
+# The Responses endpoint has its own effort vocabulary. Account catalogs can
+# also advertise Codex-only levels, which must never be sent to this endpoint.
+RESPONSE_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def compatible_reasoning_efforts(values):
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(value for value in values
+                              if isinstance(value, str) and value in RESPONSE_REASONING_EFFORTS))
 
 
 class ChatGPTError(RuntimeError):
@@ -225,7 +235,11 @@ def request(transport, method, url, *, headers=None, body=None, cancelled=None):
     return response
 
 
-def response_error(code: str = "", status: int = 0) -> ChatGPTError:
+def response_error(code: str = "", status: int = 0, *, param: str = "") -> ChatGPTError:
+    if status == 400 and param == "reasoning.effort":
+        return ChatGPTError(
+            "当前请求接口不支持所选推理档位，请刷新模型并选择受支持档位。", "effort_unavailable"
+        )
     if code in {
         "subscription_sharing_usage_limit_exceeded",
         "subscription_sharing_usage_unavailable",
@@ -257,7 +271,9 @@ def read_json(response, cancelled=None) -> dict:
         if response.status != 200:
             error = result.get("error", {})
             code = error.get("code", "") if isinstance(error, dict) else error
-            raise response_error(code if isinstance(code, str) else "", response.status)
+            param = error.get("param", "") if isinstance(error, dict) else ""
+            raise response_error(code if isinstance(code, str) else "", response.status,
+                                 param=param if isinstance(param, str) else "")
         return result
     except (ValueError, UnicodeError):
         if response.status != 200:

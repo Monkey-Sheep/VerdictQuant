@@ -22,7 +22,7 @@ class FakeClient:
                          "two": {"connected": True, "sharing": True}}
         self.new_account_staged = False
         self.catalog = [{"slug": "current", "display_name": "Current",
-                         "reasoning_efforts": ["low", "high", "ultra"]}]
+                         "reasoning_efforts": ["low", "high", "max", "ultra"]}]
         self.network_calls = []
         self.chat_calls = []
         self.chat_started = threading.Event()
@@ -138,10 +138,11 @@ class ChatGPTAssistantQtTests(unittest.TestCase):
         self.assertEqual(self.client.network_calls, [])
         self.assertEqual(self.context_calls, 0)
         self.assertEqual(self.widget.model_combo.currentData(), "current")
-        self.assertEqual(self.widget.effort_combo.currentData(), "ultra")
+        self.assertEqual(self.widget.effort_combo.currentData(), "max")
+        self.assertEqual(self.widget.effort_combo.findData("ultra"), -1)
         self.assertFalse(self.widget.send_button.isEnabled())
         self.widget.use_for_research_button.click()
-        self.assertEqual(self.configured, [("current", "ultra")])
+        self.assertEqual(self.configured, [("current", "max")])
         self.assertEqual(self.client.network_calls, [])
 
     def test_public_context_is_added_only_after_click_and_visible_before_send(self):
@@ -180,7 +181,7 @@ class ChatGPTAssistantQtTests(unittest.TestCase):
             {"role": "user", "content": "公开问题"},
             {"role": "assistant", "content": "完成回答"},
         ])
-        self.assertEqual(self.client.chat_calls[0]["reasoning_effort"], "ultra")
+        self.assertEqual(self.client.chat_calls[0]["reasoning_effort"], "max")
         self.assertIn("只读投资研究助手", self.client.chat_calls[0]["instructions"])
         self.widget.account_combo.setCurrentIndex(self.widget.account_combo.findData("two"))
         self.assertEqual(self.widget._history, [])
@@ -220,7 +221,7 @@ class ChatGPTAssistantQtTests(unittest.TestCase):
         self.widget.refresh_models_button.click()
         self.finish()
         self.assertEqual(self.widget.model_combo.currentData(), "current")
-        self.assertEqual(self.widget.effort_combo.currentData(), "ultra")
+        self.assertEqual(self.widget.effort_combo.currentData(), "max")
         self.assertIn("原有列表已保留", self.widget.status_label.text())
         self.assertNotIn("private-token", self.widget.status_label.text())
 
@@ -323,7 +324,7 @@ class WorkbenchNavigationTests(unittest.TestCase):
             window = ManualMonitorWidget(service=Monitor(), research_service=service, chatgpt_client=client)
             try:
                 window.chatgpt_assistant.use_for_research_button.click()
-                self.assertEqual(service.load_engine(), {"kind": "chatgpt_plan", "model": "current", "reasoning_effort": "ultra", "profile_id": profile})
+                self.assertEqual(service.load_engine(), {"kind": "chatgpt_plan", "model": "current", "reasoning_effort": "max", "profile_id": profile})
                 self.assertEqual(client.network_calls, [])
                 self.assertIn("已保存", window.chatgpt_assistant.status_label.text())
             finally:

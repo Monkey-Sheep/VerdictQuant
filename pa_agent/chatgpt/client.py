@@ -105,7 +105,7 @@ def _model_catalog(payload):
                 if (
                     isinstance(value, str)
                     and value
-                    in {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+                    in oauth.RESPONSE_REASONING_EFFORTS
                     and value not in efforts
                 ):
                     efforts.append(value)
@@ -153,6 +153,7 @@ def _completed_text(response):
 def _consume_stream(response, *, model, cancelled=None, on_delta=None):
     """Read SSE through completed; partial, failed and interrupted text is unusable."""
     fields, size, total = [], 0, 0
+    finished_items = {}
     deadline = time.monotonic() + 300
     try:
         while True:
@@ -199,6 +200,27 @@ def _consume_stream(response, *, model, cancelled=None, on_delta=None):
                         "ChatGPT 未完成本次回答，本次结果未采用。", "incomplete_response"
                     )
                 raise _event_error(event)
+            if event_type in {"response.output_item.added", "response.output_item.done"}:
+                item = event.get("item")
+                index = event.get("output_index")
+                if (not isinstance(item, dict) or isinstance(index, bool)
+                        or not isinstance(index, int) or not 0 <= index <= 10000):
+                    raise ValueError("Invalid output item")
+                if item.get("type") not in {"message", "reasoning"}:
+                    raise ChatGPTError("ChatGPT 返回了当前模式不支持的内容。", "unsupported_output")
+                if event_type == "response.output_item.done":
+                    if index in finished_items and finished_items[index] != item:
+                        raise ValueError("Conflicting completed output item")
+                    # Validate completed messages now, but publish only after
+                    # response.completed confirms the whole request succeeded.
+                    _completed_text({"output": [item]})
+                    finished_items[index] = item
+            if event_type in {"response.refusal.delta", "response.refusal.done"}:
+                raise ChatGPTError("ChatGPT 未能完成此请求，请调整问题。", "refused")
+            if event_type in {"response.content_part.added", "response.content_part.done"}:
+                part = event.get("part")
+                if isinstance(part, dict) and part.get("type") == "refusal":
+                    raise ChatGPTError("ChatGPT 未能完成此请求，请调整问题。", "refused")
             if event_type == "response.output_text.delta":
                 delta = event.get("delta")
                 if not isinstance(delta, str):
@@ -217,6 +239,12 @@ def _consume_stream(response, *, model, cancelled=None, on_delta=None):
                         "ChatGPT 未提供有效完成结果，本次结果未采用。", "incomplete_response"
                     )
                 text = _completed_text(completed)
+                if not completed.get("output") and finished_items:
+                    # SIWC streams can omit output from the terminal snapshot;
+                    # output_item.done carries each full, completed message.
+                    # Never promote output_text.delta drafts as final output.
+                    text = _completed_text({"output": [finished_items[index]
+                                                      for index in sorted(finished_items)]})
                 if not text.strip():
                     raise ChatGPTError("ChatGPT 未返回可用文本。", "empty_response")
                 usage = completed.get("usage")
@@ -255,7 +283,10 @@ class ChatGPTClient:
         active, accounts = self._store.snapshot()
         account = next((row for row in accounts if row["profile_id"] == active), None)
         result = _public(account)
-        result["models"] = (account or {}).get("models", [])
+        result["models"] = [
+            {**model, "reasoning_efforts": oauth.compatible_reasoning_efforts(model.get("reasoning_efforts"))}
+            for model in (account or {}).get("models", []) if isinstance(model, dict)
+        ]
         return result
 
     def list_accounts(self) -> list[dict]:
@@ -526,9 +557,9 @@ class ChatGPTClient:
             raise ChatGPTError(
                 "所选模型不在当前 ChatGPT 账户目录中，请刷新模型列表。", "model_unavailable"
             )
-        if reasoning_effort and reasoning_effort not in selected["reasoning_efforts"]:
+        if reasoning_effort and reasoning_effort not in oauth.compatible_reasoning_efforts(selected["reasoning_efforts"]):
             raise ChatGPTError(
-                "所选推理强度未由当前模型目录确认，请刷新模型列表。", "effort_unavailable"
+                "所选推理档位不受当前接口及模型支持，请刷新模型并重新选择。", "effort_unavailable"
             )
         payload = {"model": model, "input": inputs, "store": False, "stream": True}
         if reasoning_effort:
