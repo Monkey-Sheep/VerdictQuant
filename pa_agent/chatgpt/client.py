@@ -155,6 +155,23 @@ def _consume_stream(response, *, model, cancelled=None, on_delta=None):
     fields, size, total = [], 0, 0
     finished_items = {}
     deadline = time.monotonic() + 300
+    finished = threading.Event()
+    abort = getattr(response, "abort", None)
+    monitor = None
+    if callable(abort):
+        def monitor_read():
+            while not finished.wait(0.25):
+                try:
+                    stopped = oauth.is_cancelled(cancelled)
+                except Exception:
+                    # Stop the connection; the main reader will surface the
+                    # original safe session/cancellation error on its recheck.
+                    stopped = True
+                if stopped or time.monotonic() >= deadline:
+                    abort()
+                    return
+        monitor = threading.Thread(target=monitor_read, daemon=True)
+        monitor.start()
     try:
         while True:
             oauth.check_cancelled(cancelled)
@@ -162,6 +179,8 @@ def _consume_stream(response, *, model, cancelled=None, on_delta=None):
                 raise ChatGPTError("ChatGPT 响应超时，请重试。", "response_timeout")
             line = response.readline(oauth.MAX_BODY + 1)
             oauth.check_cancelled(cancelled)
+            if time.monotonic() >= deadline:
+                raise ChatGPTError("ChatGPT 响应超时，请重试。", "response_timeout")
             if not line:
                 raise ChatGPTError(
                     "ChatGPT 响应在完成前中断，本次结果未采用。", "incomplete_response"
@@ -261,13 +280,20 @@ def _consume_stream(response, *, model, cancelled=None, on_delta=None):
                 }
                 return {"text": text, "usage": usage, "model": model}
     except (UnicodeError, ValueError, TypeError):
+        oauth.check_cancelled(cancelled)
         raise ChatGPTError("ChatGPT 响应格式异常，本次结果未采用。", "invalid_response") from None
     except (OSError, TimeoutError):
+        oauth.check_cancelled(cancelled)
+        if time.monotonic() >= deadline:
+            raise ChatGPTError("ChatGPT 响应超时，请重试。", "response_timeout") from None
         raise ChatGPTError(
             "ChatGPT 连接在回答完成前中断，本次结果未采用。", "network_error"
         ) from None
     finally:
+        finished.set()
         response.close()
+        if monitor is not None:
+            monitor.join(timeout=0.5)
 
 
 class ChatGPTClient:

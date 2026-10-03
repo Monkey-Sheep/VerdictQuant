@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import http.client
 import json
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -348,6 +350,58 @@ def test_thin_terminal_does_not_hide_tools_refusals_or_invalid_items(event):
     with pytest.raises(ChatGPTError):
         _consume_stream(response, model='test-model')
     assert response.closed
+
+
+def test_stream_read_wait_is_longer_but_idle_read_cancels_promptly():
+    reader, writer = socket.socketpair()
+    pool = ThreadPoolExecutor(max_workers=1)
+    response = None
+    try:
+        reader.settimeout(10)
+        writer.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n')
+        raw = http.client.HTTPResponse(reader)
+        raw.begin()
+        response = oauth._StreamingResponse(raw)
+        assert reader.gettimeout() == oauth.RESPONSES_READ_TIMEOUT == 120
+        entered = threading.Event()
+        cancelled = threading.Event()
+        raw_readline = response.readline
+
+        def waiting_readline(limit):
+            entered.set()
+            return raw_readline(limit)
+
+        response.readline = waiting_readline
+        future = pool.submit(_consume_stream, response, model='test-model', cancelled=cancelled)
+        assert entered.wait(2)
+        cancelled.set()
+        with pytest.raises(ChatGPTError) as error:
+            future.result(timeout=3)
+        assert error.value.code == 'cancelled'
+        assert raw.isclosed()
+    finally:
+        writer.close()
+        reader.close()
+        pool.shutdown(wait=True)
+        if response is not None:
+            response.close()
+
+
+def test_long_read_setting_does_not_change_auth_or_catalog_connection_timeout(monkeypatch):
+    calls = []
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append((request.full_url, timeout))
+            return FakeResponse({})
+
+    monkeypatch.setattr(oauth.urllib.request, 'build_opener', lambda *_: Opener())
+    transport = oauth.HTTPTransport()
+    for url in (oauth.MODELS_URL, oauth.TOKEN_URL, oauth.JWKS_URL):
+        response = transport.request('GET', url, headers={})
+        assert isinstance(response, FakeResponse)
+        response.close()
+    assert calls == [(url, 10) for url in (oauth.MODELS_URL, oauth.TOKEN_URL, oauth.JWKS_URL)]
 
 
 def test_missing_plan_scope_preserves_identity_without_network(tmp_path):

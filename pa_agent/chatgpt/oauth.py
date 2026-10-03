@@ -12,6 +12,7 @@ import json
 import math
 import re
 import secrets
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -41,6 +42,7 @@ MAX_BODY = 2 * 1024 * 1024
 # The Responses endpoint has its own effort vocabulary. Account catalogs can
 # also advertise Codex-only levels, which must never be sent to this endpoint.
 RESPONSE_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+RESPONSES_READ_TIMEOUT = 120
 
 
 def compatible_reasoning_efforts(values):
@@ -204,6 +206,31 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _StreamingResponse:
+    """Keep connection setup bounded, allow reasoning, and interrupt idle reads."""
+
+    def __init__(self, response):
+        self._response = response
+        self._socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+        if isinstance(self._socket, socket.socket):
+            self._socket.settimeout(RESPONSES_READ_TIMEOUT)
+
+    def __getattr__(self, name):
+        return getattr(self._response, name)
+
+    def abort(self):
+        # A timeout-mode read on Windows can remain blocked after shutdown.
+        # Close this owned descriptor directly; buffer.close() would instead
+        # wait on the reader lock, and socket.close() can retain makefile refs.
+        if isinstance(self._socket, socket.socket):
+            with suppress(OSError):
+                self._socket.shutdown(socket.SHUT_RDWR)
+            with suppress(OSError):
+                descriptor = self._socket.detach()
+                if descriptor >= 0:
+                    socket.close(descriptor)
+
+
 class HTTPTransport:
     """Small injectable HTTPS transport. Redirects never receive bearer tokens."""
 
@@ -213,7 +240,8 @@ class HTTPTransport:
         opener = urllib.request.build_opener(_NoRedirect())
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            return opener.open(request, timeout=timeout)
+            response = opener.open(request, timeout=timeout)
+            return _StreamingResponse(response) if url == RESPONSES_URL and response.status == 200 else response
         except urllib.error.HTTPError as response:
             return response
 
