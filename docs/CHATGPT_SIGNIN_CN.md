@@ -1,7 +1,7 @@
 # ChatGPT 登录与 AI 助手
 
 1. 打开桌面“VerdictQuant 组合监控”，选择左侧“AI 助手”。点击“网页登录”，在打开的 OpenAI 官方浏览器页面亲自登录，并确认授予本软件使用 ChatGPT 订阅额度的权限。无需填写 API Key。
-2. 登录后刷新模型，选择当前账号返回的模型。在下方输入问题并发送，回复会逐步显示。模型提供推理档位时默认选最高支持档位，未提供时使用模型默认。真实可用性与额度以官方请求结果为准。
+2. 登录后刷新模型，选择当前账号返回的模型。在下方输入问题并发送，回复会逐步显示。推理档位取账号目录和 Responses 接口共同支持的选项，默认选其中最高档位，未提供时使用模型默认。当前 Responses 接口最高为 `max`，账号目录中的 `ultra` 不用于这个接口。真实可用性与额度以官方请求结果为准。
 3. 要用于原来的股票分析，点击“用于股票研究”，再进入“股票研究”点击“更新分析”。保存模型设置本身不会请求行情或调用模型；原研究保留，但切换模型后需更新。
 
 “加入当前公开研究”会将本机已保存的公开行情、财报、公告片段及来源加入本轮问题，并附上日期与过期状态。它不会自动加入预算、持仓或已投入记录，也不会重新获取市场数据。聊天只保留在当前窗口内；切换账号或退出登录会清空对话，聊天不会修改研究快照或投资计划。
@@ -15,3 +15,5 @@
 实现和离线检查通过不等于真实登录、模型请求或用户验收已完成。交付回执分别记录开发、合并、桌面部署、界面运行和真实授权后的验证状态。
 
 官方协议：[登录](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)、[模型与请求](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)、[预览限制](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
+
+推理档位核对：[官方推理模型说明](https://developers.openai.com/api/docs/guides/reasoning)。

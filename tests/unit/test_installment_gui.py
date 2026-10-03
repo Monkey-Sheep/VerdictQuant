@@ -388,8 +388,8 @@ class InstallmentQtTests(unittest.TestCase):
         self.assertIn("单独计费", self.widget.engine_note.text())
 
     def test_chatgpt_model_save_is_feature_local_and_defers_invocation(self):
-        self.widget.configure_chatgpt_model("gpt-6.1-sol", "ultra", "a" * 32)
-        self.assertEqual(self.service.saved_engines, [{"kind": "chatgpt_plan", "model": "gpt-6.1-sol", "reasoning_effort": "ultra", "profile_id": "a" * 32}])
+        self.widget.configure_chatgpt_model("gpt-6.1-sol", "max", "a" * 32)
+        self.assertEqual(self.service.saved_engines, [{"kind": "chatgpt_plan", "model": "gpt-6.1-sol", "reasoning_effort": "max", "profile_id": "a" * 32}])
         self.assertEqual(self.service.calls, 0)
         self.assertIn("订阅额度", self.widget.engine_note.text())
         self.assertNotIn("API 调用", self.widget.engine_note.text())
@@ -397,10 +397,11 @@ class InstallmentQtTests(unittest.TestCase):
     def test_chatgpt_engine_dialog_uses_cached_catalog_and_highest_supported_effort(self):
         client = Mock()
         client.status.return_value = {"profile_id": "a" * 32, "models": [{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol",
-                                                 "reasoning_efforts": ["low", "high", "ultra"]}]}
+                                                 "reasoning_efforts": ["low", "high", "max", "ultra"]}]}
         dialog = EngineSettingsDialog({}, client=client)
         dialog.model.setCurrentIndex(1)
-        self.assertEqual(dialog.collect_config(), {"kind": "chatgpt_plan", "model": "gpt-6.1-sol", "reasoning_effort": "ultra", "profile_id": "a" * 32})
+        self.assertEqual(dialog.collect_config(), {"kind": "chatgpt_plan", "model": "gpt-6.1-sol", "reasoning_effort": "max", "profile_id": "a" * 32})
+        self.assertEqual(dialog.reasoning.findData("ultra"), -1)
         client.list_models.assert_not_called()
         client.chat.assert_not_called()
         dialog.close()

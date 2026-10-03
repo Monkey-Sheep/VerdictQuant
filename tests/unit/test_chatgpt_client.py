@@ -78,7 +78,7 @@ def seed(
             {
                 "slug": "test-model",
                 "display_name": "Test Model",
-                "reasoning_efforts": ["low", "ultra"],
+                "reasoning_efforts": ["low", "max"],
             }
         ],
     }
@@ -202,7 +202,7 @@ def test_request_contract_no_tools_history_ids_or_api_fallback(tmp_path):
         client.chat(
             [{"role": "user", "content": "hello"}],
             "test-model",
-            "ultra",
+            "max",
             instructions="research only",
             output_schema=schema,
         )["text"]
@@ -217,7 +217,7 @@ def test_request_contract_no_tools_history_ids_or_api_fallback(tmp_path):
         "input": [{"role": "user", "content": "hello"}],
         "store": False,
         "stream": True,
-        "reasoning": {"effort": "ultra"},
+        "reasoning": {"effort": "max"},
         "instructions": "research only",
         "text": {
             "format": {
@@ -250,7 +250,7 @@ def test_catalog_only_visible_preserves_order_no_effort_guess(tmp_path):
                             "slug": "a",
                             "display_name": "A",
                             "visibility": "list",
-                            "supported_reasoning_levels": [{"effort": "low"}, {"effort": "ultra"}],
+                            "supported_reasoning_levels": [{"effort": "low"}, {"effort": "max"}, {"effort": "ultra"}],
                         },
                     ]
                 }
@@ -261,10 +261,93 @@ def test_catalog_only_visible_preserves_order_no_effort_guess(tmp_path):
     seed(client)
     assert client.list_models() == [
         {"slug": "b", "display_name": "B", "reasoning_efforts": []},
-        {"slug": "a", "display_name": "A", "reasoning_efforts": ["low", "ultra"]},
+        {"slug": "a", "display_name": "A", "reasoning_efforts": ["low", "max"]},
     ]
     assert client.status()["models"][0]["slug"] == "b"
     assert "synthetic" not in json.dumps(client.status())
+
+
+def test_saved_catalog_filters_endpoint_incompatible_effort_without_writing(tmp_path):
+    transport = FakeTransport()
+    client = ChatGPTClient(tmp_path, MemorySecretStore(), transport)
+    account, _ = seed(client)
+    account['models'][0]['reasoning_efforts'] = ['low', 'max', 'ultra']
+    with client._store.locked() as db:
+        client._store.put(db, account)
+    assert client.status()['models'][0]['reasoning_efforts'] == ['low', 'max']
+    assert client._store.snapshot()[1][0]['models'][0]['reasoning_efforts'] == ['low', 'max', 'ultra']
+    with pytest.raises(ChatGPTError) as error:
+        client.chat([{'role': 'user', 'content': 'hello'}], 'test-model', 'ultra')
+    assert error.value.code == 'effort_unavailable'
+    assert not transport.calls
+
+
+def test_effort_http_error_is_specific_and_does_not_echo_server_text():
+    response = FakeResponse({'error': {'code': 'invalid_value', 'type': 'invalid_request_error',
+                                      'param': 'reasoning.effort', 'message': 'private-server-text synthetic-access-token'}}, status=400)
+    with pytest.raises(ChatGPTError) as error:
+        oauth.read_json(response)
+    assert error.value.code == 'effort_unavailable'
+    assert '推理档位' in str(error.value)
+    assert 'private-server-text' not in str(error.value)
+    assert 'synthetic-access-token' not in str(error.value)
+    assert response.closed
+
+
+def output_done(text='finished message', index=0, **changes):
+    item = completed(text)['response']['output'][0]
+    item.update(changes)
+    return {'type': 'response.output_item.done', 'output_index': index, 'item': item}
+
+
+def test_terminal_without_output_uses_completed_message_not_delta_draft():
+    response = sse({'type': 'response.output_text.delta', 'delta': 'draft'},
+                   output_done('confirmed final'), completed(output=[]))
+    deltas = []
+    result = _consume_stream(response, model='test-model', on_delta=deltas.append)
+    assert result['text'] == 'confirmed final'
+    assert result['usage'] == {'input_tokens': 10, 'output_tokens': 20, 'total_tokens': 30}
+    assert deltas == ['draft'] and response.closed
+
+
+def test_completed_messages_without_successful_terminal_are_never_adopted():
+    for terminal in ({'type': 'response.failed'}, {'type': 'response.incomplete'}, None):
+        events = [output_done('must discard')]
+        if terminal:
+            events.append(terminal)
+        response = sse(*events)
+        with pytest.raises(ChatGPTError):
+            _consume_stream(response, model='test-model')
+        assert response.closed
+
+
+def test_delta_drafts_alone_cannot_fill_empty_completed_output():
+    response = sse({'type': 'response.output_text.delta', 'delta': 'only draft'}, completed(output=[]))
+    with pytest.raises(ChatGPTError) as error:
+        _consume_stream(response, model='test-model')
+    assert error.value.code == 'empty_response'
+
+
+def test_completed_message_items_keep_output_order_and_terminal_text_wins():
+    assert _consume_stream(sse(output_done('second', 2), output_done('first', 1), completed(output=[])),
+                           model='test-model')['text'] == 'firstsecond'
+    assert _consume_stream(sse(output_done('item snapshot'), completed('terminal snapshot')),
+                           model='test-model')['text'] == 'terminal snapshot'
+
+
+@pytest.mark.parametrize('event', [
+    {'type': 'response.output_item.added', 'output_index': 0, 'item': {'type': 'function_call'}},
+    output_done('refused', content=[{'type': 'refusal', 'refusal': 'private'}]),
+    {'type': 'response.refusal.delta', 'delta': 'private'},
+    {'type': 'response.content_part.done', 'part': {'type': 'refusal', 'refusal': 'private'}},
+    output_done('incomplete', status='in_progress'),
+    output_done('invalid index', index=True),
+])
+def test_thin_terminal_does_not_hide_tools_refusals_or_invalid_items(event):
+    response = sse(event, completed(output=[]))
+    with pytest.raises(ChatGPTError):
+        _consume_stream(response, model='test-model')
+    assert response.closed
 
 
 def test_missing_plan_scope_preserves_identity_without_network(tmp_path):
@@ -508,7 +591,7 @@ def test_expected_profile_rejects_before_refresh_or_inference(tmp_path):
         lambda: client.chat(
             [{"role": "user", "content": "private history"}],
             "test-model",
-            "ultra",
+            "max",
             expected_profile_id="conversation-owner",
         ),
     ):
@@ -532,8 +615,8 @@ def test_malformed_optional_catalog_efforts_are_not_inferred(tmp_path):
                                 {"effort": []},
                                 {"effort": {}},
                                 None,
-                                ["ultra"],
-                                {"effort": "ultra"},
+                                ["max"],
+                                {"effort": "max"},
                             ],
                         }
                     ]
@@ -543,7 +626,7 @@ def test_malformed_optional_catalog_efforts_are_not_inferred(tmp_path):
     )
     client = ChatGPTClient(tmp_path, MemorySecretStore(), transport)
     seed(client)
-    assert client.list_models()[0]["reasoning_efforts"] == ["ultra"]
+    assert client.list_models()[0]["reasoning_efforts"] == ["max"]
 
 
 def test_signin_with_identity_only_keeps_account(tmp_path, monkeypatch, signing_key):

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from pa_agent.installment.models import SYMBOLS, CORE_SYMBOLS, THEMES, current_period
+from pa_agent.chatgpt.oauth import RESPONSE_REASONING_EFFORTS
 from pa_agent.gui.investment_plan import InvestmentPlanDialog
 from pa_agent.gui.workbench_ui import (
     Disclosure, FitTextBrowser, MetricCard, apply_workbench_style, document_html, empty_html,
@@ -26,7 +27,7 @@ from pa_agent.gui.workbench_ui import (
 )
 
 DEFAULT_ENGINE = {"kind": "chatgpt_plan", "model": "", "reasoning_effort": "", "profile_id": ""}
-REASONING_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+REASONING_ORDER = RESPONSE_REASONING_EFFORTS
 
 
 def _text(value, fallback="待核实"):
